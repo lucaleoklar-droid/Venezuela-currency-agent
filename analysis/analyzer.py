@@ -145,9 +145,9 @@ def check_spike_alerts() -> list[dict]:
     bcv = latest.get("bcv_rate")
     spread = latest.get("spread_pct")
 
-    # Rate spike > 3% in 24h
+    # Rate spike > 10% in 24h (5-10% is normal daily noise in Venezuela 2025)
     change_24h = compute_change_pct(rates_24h, 24)
-    if change_24h and abs(change_24h) > 3:
+    if change_24h and abs(change_24h) > 10:
         direction = "subió" if change_24h > 0 else "bajó"
         alerts.append({
             "type": "rate_spike_24h",
@@ -156,9 +156,9 @@ def check_spike_alerts() -> list[dict]:
             "alert_type": "SPIKE",
         })
 
-    # Rate drop > 2% in 12h (opportunity)
+    # Rate drop > 8% in 12h (opportunity — meaningful move in current market)
     change_12h = compute_change_pct(rates_12h, 12)
-    if change_12h and change_12h < -2:
+    if change_12h and change_12h < -8:
         alerts.append({
             "type": "rate_drop_12h",
             "detail": f"La tasa bajó {abs(change_12h):.1f}% en las últimas 12h — posible oportunidad de conversión",
@@ -166,19 +166,27 @@ def check_spike_alerts() -> list[dict]:
             "alert_type": "OPPORTUNITY",
         })
 
-    # Spread critical > 20%
-    if spread and spread > 20:
+    # Emergency > 75% (Jan 2026 crisis level — requires immediate action)
+    if spread and spread > 75:
         alerts.append({
-            "type": "spread_critical",
-            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (CRÍTICA — umbral: 20%)",
+            "type": "spread_emergency",
+            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (EMERGENCIA — nivel de crisis)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "CRITICAL",
         })
-    # Spread elevated > 12%
-    elif spread and spread > 12:
+    # Critical > 50% (forces operational changes — USD-only pricing)
+    elif spread and spread > 50:
+        alerts.append({
+            "type": "spread_critical",
+            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (CRÍTICA — considerar precios solo en USD)",
+            "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
+            "alert_type": "CRITICAL",
+        })
+    # Elevated > 35% (above 2024-2025 baseline of 20-27%)
+    elif spread and spread > 35:
         alerts.append({
             "type": "spread_elevated",
-            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (ELEVADA — umbral: 12%)",
+            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (ELEVADA — por encima del rango normal 2025)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "WARNING",
         })
