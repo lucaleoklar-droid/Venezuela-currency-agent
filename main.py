@@ -54,14 +54,15 @@ def _utctoday():
 
 def _derive_urgency(claude_text: str, spread_pct: float | None) -> str:
     """Derive urgency from spread level + Claude's response keywords."""
+    from analysis.analyzer import SPREAD_ELEVATED, SPREAD_CRITICAL, SPREAD_EMERGENCY
     text = (claude_text or "").lower()
-    if spread_pct is not None and spread_pct > 75:
+    if spread_pct is not None and spread_pct > SPREAD_EMERGENCY:
         return "critical"
-    if spread_pct is not None and spread_pct > 50:
+    if spread_pct is not None and spread_pct > SPREAD_CRITICAL:
         return "high"
     if any(kw in text for kw in ["urgente", "crític", "inmediat", "emergencia"]):
         return "high"
-    if spread_pct is not None and spread_pct > 35:
+    if spread_pct is not None and spread_pct > SPREAD_ELEVATED:
         return "medium"
     if any(kw in text for kw in ["atención", "vigil", "considerar"]):
         return "medium"

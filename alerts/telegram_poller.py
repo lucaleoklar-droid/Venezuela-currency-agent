@@ -8,7 +8,10 @@ import logging
 import requests
 from datetime import datetime, timezone, timedelta
 from db.db import get_latest_rate, get_recent_rates
-from analysis.analyzer import compute_change_pct, get_trend_description, get_rates_last_n_days
+from analysis.analyzer import (
+    compute_change_pct, get_trend_description, get_rates_last_n_days,
+    SPREAD_ELEVATED, SPREAD_CRITICAL,
+)
 from alerts.telegram_bot import _escape, _spanish_date
 
 VET_OFFSET = timedelta(hours=-4)  # Venezuela is UTC-4, no DST
@@ -89,9 +92,9 @@ def _current_rate_message() -> str:
 
     status_emoji = "🟢"
     status_label = "NORMAL"
-    if spread is not None and spread > 50:
+    if spread is not None and spread > SPREAD_CRITICAL:
         status_emoji, status_label = "🔴", "CRÍTICA"
-    elif spread is not None and spread > 35:
+    elif spread is not None and spread > SPREAD_ELEVATED:
         status_emoji, status_label = "🟡", "ELEVADA"
 
     rates_24h = get_recent_rates(24)

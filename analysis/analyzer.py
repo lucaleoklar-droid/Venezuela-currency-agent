@@ -6,6 +6,12 @@ from analysis.claude_client import analyze
 
 logger = logging.getLogger(__name__)
 
+# Spread thresholds — single source of truth used by alerts, query commands,
+# and urgency derivation. Keep these synced; importers depend on them.
+SPREAD_ELEVATED = 32
+SPREAD_CRITICAL = 45
+SPREAD_EMERGENCY = 65
+
 
 def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -189,21 +195,21 @@ def check_spike_alerts() -> list[dict]:
         })
 
     # Spread alerts (mutually exclusive, highest severity wins)
-    if spread is not None and spread > 65:
+    if spread is not None and spread > SPREAD_EMERGENCY:
         alerts.append({
             "type": "spread_emergency",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (EMERGENCIA — nivel de crisis)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "EMERGENCY",
         })
-    elif spread is not None and spread > 45:
+    elif spread is not None and spread > SPREAD_CRITICAL:
         alerts.append({
             "type": "spread_critical",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (CRÍTICA — considerar precios solo en USD)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "CRITICAL",
         })
-    elif spread is not None and spread > 25:
+    elif spread is not None and spread > SPREAD_ELEVATED:
         alerts.append({
             "type": "spread_elevated",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (ELEVADA — por encima del rango normal)",
