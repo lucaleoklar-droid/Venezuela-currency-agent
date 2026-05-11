@@ -3,7 +3,8 @@ import os
 from datetime import datetime, date
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "venezuela_currency.db")
+_data_dir = os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__)))
+DB_PATH = os.path.join(_data_dir, "venezuela_currency.db")
 
 
 def get_connection():
