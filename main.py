@@ -110,10 +110,11 @@ def run_weekly_report():
     logger.info("--- Weekly report ---")
     try:
         report = generate_report()
-        # Save locally
         date_str = datetime.now().strftime("%Y-%m-%d")
-        local_path = os.path.join("briefs", f"weekly-{date_str}.md")
-        os.makedirs("briefs", exist_ok=True)
+        data_dir = os.getenv("DATA_DIR", os.path.dirname(__file__))
+        briefs_dir = os.path.join(data_dir, "briefs")
+        os.makedirs(briefs_dir, exist_ok=True)
+        local_path = os.path.join(briefs_dir, f"weekly-{date_str}.md")
         with open(local_path, "w", encoding="utf-8") as f:
             f.write(report)
         logger.info(f"Weekly report saved locally: {local_path}")

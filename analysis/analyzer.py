@@ -104,7 +104,7 @@ def run_analysis() -> dict:
     spread_pct = latest.get("spread_pct", "N/A")
     change_24h = compute_change_pct(rates_24h, 24) or 0.0
     trend_7d = get_trend_description(rates_7d)
-    avg_spread_30d = get_avg_spread(30) or spread_pct
+    avg_spread_30d = get_avg_spread(30)
     table = format_7day_table(rates_7d)
 
     prompt = CORE_ANALYSIS_PROMPT.format(
@@ -113,7 +113,7 @@ def run_analysis() -> dict:
         spread_pct=spread_pct,
         change_24h=f"{change_24h:+.2f}" if isinstance(change_24h, float) else change_24h,
         trend_7d=trend_7d,
-        avg_spread_30d=f"{avg_spread_30d:.1f}" if avg_spread_30d else "N/A",
+        avg_spread_30d=f"{avg_spread_30d:.1f}" if isinstance(avg_spread_30d, (int, float)) else "N/A",
         last_7_days_table=table,
     )
 

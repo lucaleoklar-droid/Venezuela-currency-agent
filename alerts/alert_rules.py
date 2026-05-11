@@ -1,4 +1,6 @@
 import logging
+import json
+import os
 from datetime import datetime
 from db.db import insert_alert, get_undelivered_alerts, mark_alert_delivered
 from analysis.analyzer import check_spike_alerts, build_spike_message
@@ -7,25 +9,55 @@ from scrapers.scraper_health import check_bcv_freshness
 
 logger = logging.getLogger(__name__)
 
-# How many hours to wait before sending the same alert type again
+# Cooldown keyed by alert_type (SPIKE, CRITICAL, etc) — matches what's stored in DB
 ALERT_COOLDOWN_HOURS = {
-    "rate_spike_24h": 6,
-    "rate_drop_12h": 4,
-    "spread_critical": 4,
-    "spread_elevated": 24,
-    "momentum_rising": 24,
-    "bcv_stale": 24,
+    "SPIKE": 6,
+    "OPPORTUNITY": 4,
+    "CRITICAL": 4,
+    "WARNING": 24,
+    "MOMENTUM": 24,
+    "STALE": 24,
 }
 
-_last_alerts: dict[str, datetime] = {}
+# Persist cooldown state to disk so Railway restarts don't reset it
+_COOLDOWN_FILE = os.path.join(
+    os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__))),
+    "cooldowns.json"
+)
+
+
+def _load_cooldowns() -> dict:
+    try:
+        if os.path.exists(_COOLDOWN_FILE):
+            with open(_COOLDOWN_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_cooldowns(cooldowns: dict):
+    try:
+        with open(_COOLDOWN_FILE, "w") as f:
+            json.dump(cooldowns, f)
+    except Exception as e:
+        logger.warning(f"Could not save cooldowns: {e}")
 
 
 def _is_on_cooldown(alert_type: str) -> bool:
-    if alert_type not in _last_alerts:
+    cooldowns = _load_cooldowns()
+    if alert_type not in cooldowns:
         return False
     cooldown_h = ALERT_COOLDOWN_HOURS.get(alert_type, 12)
-    elapsed = (datetime.utcnow() - _last_alerts[alert_type]).total_seconds() / 3600
+    last_sent = datetime.fromisoformat(cooldowns[alert_type])
+    elapsed = (datetime.utcnow() - last_sent).total_seconds() / 3600
     return elapsed < cooldown_h
+
+
+def _mark_cooldown(alert_type: str):
+    cooldowns = _load_cooldowns()
+    cooldowns[alert_type] = datetime.utcnow().isoformat()
+    _save_cooldowns(cooldowns)
 
 
 def process_alerts():
@@ -43,7 +75,7 @@ def process_alerts():
         })
 
     for alert in alerts:
-        alert_type = alert["type"]
+        alert_type = alert["alert_type"]  # SPIKE, CRITICAL, etc
         if _is_on_cooldown(alert_type):
             logger.debug(f"Alert {alert_type} is on cooldown, skipping")
             continue
@@ -51,7 +83,7 @@ def process_alerts():
         try:
             message = build_spike_message(alert)
             timestamp = datetime.utcnow().isoformat()
-            insert_alert(timestamp, alert["alert_type"], message)
+            insert_alert(timestamp, alert_type, message)
             logger.info(f"Alert queued: {alert_type}")
         except Exception as e:
             logger.error(f"Failed to build alert message for {alert_type}: {e}")
@@ -66,6 +98,6 @@ def deliver_queued_alerts():
         success = send_alert(alert["alert_type"], alert["message"])
         if success:
             mark_alert_delivered(alert["id"])
-            _last_alerts[alert.get("alert_type", "unknown")] = datetime.utcnow()
+            _mark_cooldown(alert["alert_type"])
         else:
             logger.warning(f"Failed to deliver alert id={alert['id']}, will retry")
