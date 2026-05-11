@@ -204,20 +204,22 @@ def _handle_command(text: str) -> str:
     return _help_message()
 
 
-def poll_for_messages():
-    """Check Telegram for incoming messages and respond. Runs from the scheduler."""
+def poll_for_messages(long_poll: bool = False):
+    """Check Telegram for incoming messages and respond.
+    long_poll=True uses 25s long polling for near-instant response."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         return
 
     offset = _load_offset()
     allowed = _allowed_chat_ids()
+    poll_timeout = 25 if long_poll else 0
 
     try:
         resp = requests.get(
             TELEGRAM_API.format(token=token) + "/getUpdates",
-            params={"offset": offset + 1, "timeout": 0},
-            timeout=10,
+            params={"offset": offset + 1, "timeout": poll_timeout},
+            timeout=poll_timeout + 10,
         )
         resp.raise_for_status()
         data = resp.json()
