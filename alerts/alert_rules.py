@@ -93,9 +93,21 @@ def process_alerts():
 
 def deliver_queued_alerts():
     """Send any undelivered alerts via Telegram."""
+    from db.db import get_connection
     pending = get_undelivered_alerts()
     for alert in pending:
-        success = send_alert(alert["alert_type"], alert["message"])
+        # Fetch rate data from the DB row if available
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT r.bcv_rate, r.parallel_rate, r.spread_pct "
+            "FROM rates r ORDER BY r.timestamp DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        bcv = row["bcv_rate"] if row else None
+        parallel = row["parallel_rate"] if row else None
+        spread = row["spread_pct"] if row else None
+
+        success = send_alert(alert["alert_type"], alert["message"], bcv, parallel, spread)
         if success:
             mark_alert_delivered(alert["id"])
             _mark_cooldown(alert["alert_type"])

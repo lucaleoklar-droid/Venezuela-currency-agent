@@ -8,8 +8,17 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
+ALERT_HEADERS = {
+    "SPIKE":       ("⚡", "MOVIMIENTO BRUSCO"),
+    "OPPORTUNITY": ("💰", "OPORTUNIDAD"),
+    "CRITICAL":    ("🔴", "ALERTA CRÍTICA"),
+    "WARNING":     ("🟡", "BRECHA ELEVADA"),
+    "MOMENTUM":    ("📈", "TENDENCIA ALCISTA"),
+    "STALE":       ("⚠️", "DATOS BCV DESACTUALIZADOS"),
+}
 
-def send_message(text: str, parse_mode: str = None) -> bool:
+
+def send_message(text: str) -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -17,14 +26,10 @@ def send_message(text: str, parse_mode: str = None) -> bool:
         logger.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
         return False
 
-    payload = {"chat_id": chat_id, "text": text}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-
     try:
         resp = requests.post(
             TELEGRAM_API.format(token=token),
-            json=payload,
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
             timeout=10,
         )
         resp.raise_for_status()
@@ -35,22 +40,48 @@ def send_message(text: str, parse_mode: str = None) -> bool:
         return False
 
 
-def send_alert(alert_type: str, message: str) -> bool:
-    header = {
-        "SPIKE": "ALERTA: Movimiento brusco de tasa",
-        "OPPORTUNITY": "OPORTUNIDAD: Bajada de tasa",
-        "CRITICAL": "CRITICO: Brecha extrema BCV/Paralelo",
-        "WARNING": "ADVERTENCIA: Brecha elevada",
-        "MOMENTUM": "ATENCION: Tendencia alcista continua",
-        "STALE": "AVISO: Datos BCV desactualizados",
-    }.get(alert_type, "ALERTA Venezuela Divisas")
+def send_alert(alert_type: str, message: str, bcv_rate=None, parallel_rate=None, spread_pct=None) -> bool:
+    emoji, title = ALERT_HEADERS.get(alert_type, ("🔔", "ALERTA"))
 
-    full_message = f"[{header}]\n\n{message}"
-    return send_message(full_message)
+    lines = [f"{emoji} <b>{title}</b>", "─" * 16]
+
+    if bcv_rate and parallel_rate and spread_pct is not None:
+        lines += [
+            f"BCV:       <code>{bcv_rate:.2f} VES/USD</code>",
+            f"Paralelo:  <code>{parallel_rate:.2f} VES/USD</code>",
+            f"Brecha:    <b>{spread_pct:.1f}%</b>",
+            "",
+        ]
+
+    lines.append(message)
+    return send_message("\n".join(lines))
 
 
-def send_daily_brief(message: str) -> bool:
+def send_daily_brief(bcv_rate, parallel_rate, spread_pct, spread_status,
+                     change_24h, trend_7d, analysis_text) -> bool:
     from datetime import datetime
-    date_str = datetime.now().strftime("%A %d de %B, %Y")
-    full_message = f"Venezuela Divisas — {date_str}\n\n{message}"
-    return send_message(full_message)
+
+    status_emoji = {"NORMAL": "🟢", "ELEVADA": "🟡", "CRITICA": "🔴"}.get(spread_status, "⚪")
+    change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➡️"
+    import locale
+    try:
+        locale.setlocale(locale.LC_TIME, "es_VE.UTF-8")
+    except Exception:
+        try:
+            locale.setlocale(locale.LC_TIME, "es_ES.UTF-8")
+        except Exception:
+            pass
+    date_str = datetime.now().strftime("%A %d de %B").lower().capitalize()
+
+    lines = [
+        f"<b>Venezuela Divisas — {date_str}</b>",
+        "─" * 16,
+        f"BCV:       <code>{bcv_rate:.2f} VES/USD</code>",
+        f"Paralelo:  <code>{parallel_rate:.2f} VES/USD</code>",
+        f"Brecha:    <b>{spread_pct:.1f}%</b>  {status_emoji} {spread_status}",
+        f"24h:       {change_emoji} {change_24h:+.1f}%",
+        f"Tendencia: {trend_7d}",
+        "",
+        analysis_text,
+    ]
+    return send_message("\n".join(lines))
