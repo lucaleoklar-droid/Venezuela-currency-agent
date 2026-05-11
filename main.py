@@ -105,6 +105,12 @@ def scrape_and_store():
     except Exception as e:
         logger.exception(f"Alert processing error: {e}")
 
+    # Update CSVs on GitHub after every scrape so data on GitHub stays fresh
+    try:
+        export_to_github()
+    except Exception as e:
+        logger.exception(f"CSV export error: {e}")
+
 
 def run_analysis_job():
     logger.info("--- Analysis cycle ---")
@@ -169,11 +175,9 @@ def setup_schedule():
     schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
     schedule.every().monday.at("12:00").do(run_weekly_report)
     schedule.every(6).hours.do(heartbeat)
-    schedule.every(1).hours.do(run_csv_export)
 
     logger.info("Schedule:")
-    logger.info("  Scrape:        every 30 min")
-    logger.info("  CSV export:    every hour")
+    logger.info("  Scrape:        every 30 min (also exports CSVs)")
     logger.info("  Analysis:      every 4 hours")
     logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
     logger.info("  Weekly report: Mondays 12:00 UTC")
