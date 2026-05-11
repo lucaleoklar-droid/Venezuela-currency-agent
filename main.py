@@ -220,6 +220,10 @@ def main():
     init_db()
     logger.info("Database initialized")
 
+    from db.db import get_all_cooldowns
+    cds = get_all_cooldowns()
+    logger.info(f"Cooldown state at startup: {len(cds)} active — {cds}")
+
     clear_stale_alerts()
     scrape_and_store()
     start_telegram_thread()

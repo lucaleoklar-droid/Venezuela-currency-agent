@@ -1,60 +1,39 @@
 import logging
-import json
-import os
 from datetime import datetime, timezone
-from db.db import insert_alert, get_undelivered_alerts, mark_alert_delivered
+from db.db import (
+    insert_alert, get_undelivered_alerts, mark_alert_delivered,
+    get_cooldown, set_cooldown,
+)
 from analysis.analyzer import check_spike_alerts, build_spike_message
 from alerts.telegram_bot import send_alert
 from scrapers.scraper_health import check_bcv_freshness
 
 logger = logging.getLogger(__name__)
 
-# Cooldowns keyed by alert_type. Note: spread alerts all share "CRITICAL"/"WARNING"
-# so going from WARNING→CRITICAL won't be suppressed by a fresh WARNING cooldown.
+# Cooldowns keyed by alert_type. EMERGENCY/CRITICAL/WARNING use different keys
+# so escalation across spread tiers re-fires correctly.
 ALERT_COOLDOWN_HOURS = {
     "SPIKE": 6,
     "OPPORTUNITY": 4,
+    "EMERGENCY": 1,
     "CRITICAL": 4,
     "WARNING": 24,
     "MOMENTUM": 24,
     "STALE": 24,
 }
 
-_COOLDOWN_FILE = os.path.join(
-    os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__))),
-    "cooldowns.json"
-)
-
 
 def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _load_cooldowns() -> dict:
-    try:
-        if os.path.exists(_COOLDOWN_FILE):
-            with open(_COOLDOWN_FILE) as f:
-                return json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load cooldowns: {e}")
-    return {}
-
-
-def _save_cooldowns(cooldowns: dict):
-    try:
-        with open(_COOLDOWN_FILE, "w") as f:
-            json.dump(cooldowns, f)
-    except Exception as e:
-        logger.warning(f"Could not save cooldowns: {e}")
-
-
 def _is_on_cooldown(alert_type: str) -> bool:
-    cooldowns = _load_cooldowns()
-    if alert_type not in cooldowns:
+    last_sent_str = get_cooldown(alert_type)
+    if not last_sent_str:
         return False
     cooldown_h = ALERT_COOLDOWN_HOURS.get(alert_type, 12)
     try:
-        last_sent = datetime.fromisoformat(cooldowns[alert_type])
+        last_sent = datetime.fromisoformat(last_sent_str)
     except (ValueError, TypeError):
         return False
     elapsed = (_utcnow() - last_sent).total_seconds() / 3600
@@ -62,9 +41,7 @@ def _is_on_cooldown(alert_type: str) -> bool:
 
 
 def _mark_cooldown(alert_type: str):
-    cooldowns = _load_cooldowns()
-    cooldowns[alert_type] = _utcnow().isoformat()
-    _save_cooldowns(cooldowns)
+    set_cooldown(alert_type, _utcnow().isoformat())
 
 
 def process_alerts():

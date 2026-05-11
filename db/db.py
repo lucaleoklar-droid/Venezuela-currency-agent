@@ -61,6 +61,11 @@ def init_db():
                 raw_response TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS alert_cooldowns (
+                alert_type TEXT PRIMARY KEY,
+                last_sent TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_rates_timestamp ON rates(timestamp);
             CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_date ON daily_analysis(date);
@@ -167,6 +172,30 @@ def upsert_daily_analysis(date_str: str, claude_summary: str, recommendation: st
             "urgency_level=excluded.urgency_level, raw_response=excluded.raw_response",
             (date_str, claude_summary, recommendation, urgency_level, raw_response)
         )
+
+
+def get_cooldown(alert_type: str) -> str | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT last_sent FROM alert_cooldowns WHERE alert_type = ?",
+            (alert_type,)
+        ).fetchone()
+    return row["last_sent"] if row else None
+
+
+def set_cooldown(alert_type: str, last_sent: str):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO alert_cooldowns (alert_type, last_sent) VALUES (?, ?) "
+            "ON CONFLICT(alert_type) DO UPDATE SET last_sent = excluded.last_sent",
+            (alert_type, last_sent)
+        )
+
+
+def get_all_cooldowns() -> dict:
+    with db() as conn:
+        rows = conn.execute("SELECT alert_type, last_sent FROM alert_cooldowns").fetchall()
+    return {r["alert_type"]: r["last_sent"] for r in rows}
 
 
 def get_weekly_data():

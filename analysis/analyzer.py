@@ -160,9 +160,9 @@ def check_spike_alerts() -> list[dict]:
     bcv = latest.get("bcv_rate")
     spread = latest.get("spread_pct")
 
-    # Rate spike > 10% in 24h
+    # Rate spike > 6% in 24h
     change_24h = compute_change_pct(rates_24h, 24)
-    if change_24h is not None and abs(change_24h) > 10:
+    if change_24h is not None and abs(change_24h) > 6:
         direction = "subió" if change_24h > 0 else "bajó"
         alerts.append({
             "type": "rate_spike_24h",
@@ -171,35 +171,42 @@ def check_spike_alerts() -> list[dict]:
             "alert_type": "SPIKE",
         })
 
-    # Rate drop > 8% in 12h
+    # 12h move: drop > 5% (opportunity) or jump > 6% (warning)
     change_12h = compute_change_pct(rates_12h, 12)
-    if change_12h is not None and change_12h < -8:
+    if change_12h is not None and change_12h < -5:
         alerts.append({
             "type": "rate_drop_12h",
             "detail": f"La tasa bajó {abs(change_12h):.1f}% en las últimas 12h — posible oportunidad de conversión",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "OPPORTUNITY",
         })
+    elif change_12h is not None and change_12h > 6:
+        alerts.append({
+            "type": "rate_jump_12h",
+            "detail": f"La tasa subió {change_12h:.1f}% en las últimas 12h — movimiento abrupto al alza",
+            "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
+            "alert_type": "SPIKE",
+        })
 
     # Spread alerts (mutually exclusive, highest severity wins)
-    if spread is not None and spread > 75:
+    if spread is not None and spread > 65:
         alerts.append({
             "type": "spread_emergency",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (EMERGENCIA — nivel de crisis)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
-            "alert_type": "CRITICAL",
+            "alert_type": "EMERGENCY",
         })
-    elif spread is not None and spread > 50:
+    elif spread is not None and spread > 45:
         alerts.append({
             "type": "spread_critical",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (CRÍTICA — considerar precios solo en USD)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "CRITICAL",
         })
-    elif spread is not None and spread > 35:
+    elif spread is not None and spread > 25:
         alerts.append({
             "type": "spread_elevated",
-            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (ELEVADA — por encima del rango normal 2025)",
+            "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (ELEVADA — por encima del rango normal)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "WARNING",
         })
