@@ -31,8 +31,10 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 from db.db import init_db, insert_rate, upsert_daily_analysis, get_connection
+from db.backup import backup_database_to_github
 from scrapers.bcv_scraper import scrape_bcv
 from scrapers.parallel_scraper import get_parallel_rate
+from scrapers.sanity_check import validate_rate
 from alerts.alert_rules import process_alerts
 from analysis.analyzer import run_analysis
 from reports.daily_brief import generate_and_send as send_daily_brief
@@ -80,6 +82,17 @@ def scrape_and_store():
         logger.warning(f"BCV scrape failed: {bcv_result.get('error')}")
     if not parallel_rate:
         logger.warning(f"Parallel scrape failed: {parallel_result.get('error')}")
+
+    if parallel_rate is not None:
+        ok, reason = validate_rate(parallel_rate, parallel_result.get("source", "unknown"), "parallel")
+        if not ok:
+            logger.warning(f"Parallel rate rejected: {reason}")
+            parallel_rate = None
+    if bcv_rate is not None:
+        ok, reason = validate_rate(bcv_rate, "bcv.org.ve", "bcv")
+        if not ok:
+            logger.warning(f"BCV rate rejected: {reason}")
+            bcv_rate = None
 
     if bcv_rate or parallel_rate:
         spread_pct = None
@@ -171,11 +184,19 @@ def run_csv_export():
         logger.exception(f"CSV export error: {e}")
 
 
+def run_db_backup():
+    try:
+        backup_database_to_github()
+    except Exception as e:
+        logger.exception(f"DB backup error: {e}")
+
+
 def setup_schedule():
     schedule.every(30).minutes.do(scrape_and_store)
     schedule.every(4).hours.do(run_analysis_job)
     schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
     schedule.every().monday.at("12:00").do(run_weekly_report)
+    schedule.every().day.at("07:00").do(run_db_backup)  # 03:00 Venezuela — quietest hour
     schedule.every(6).hours.do(heartbeat)
 
     logger.info("Schedule:")
@@ -184,6 +205,7 @@ def setup_schedule():
     logger.info("  Analysis:      every 4 hours")
     logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
     logger.info("  Weekly report: Mondays 12:00 UTC")
+    logger.info("  DB backup:     daily 07:00 UTC (03:00 VET)")
     logger.info("  Heartbeat:     every 6 hours")
 
 

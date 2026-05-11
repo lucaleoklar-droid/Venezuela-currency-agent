@@ -6,10 +6,12 @@ import os
 import json
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from db.db import get_latest_rate, get_recent_rates
 from analysis.analyzer import compute_change_pct, get_trend_description, get_rates_last_n_days
 from alerts.telegram_bot import _escape, _spanish_date
+
+VET_OFFSET = timedelta(hours=-4)  # Venezuela is UTC-4, no DST
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +107,7 @@ def _current_rate_message() -> str:
         change_str = f"➡️ {change_24h:+.1f}%"
 
     lines = [
-        f"<b>Tasas actuales — {_spanish_date(datetime.now())}</b>",
+        f"<b>Tasas actuales — {_spanish_date(datetime.now(timezone.utc) + VET_OFFSET)}</b>",
         "─" * 16,
         f"BCV:       <code>{bcv:.2f} VES/USD</code>" if bcv is not None else "BCV:       N/A",
         f"Paralelo:  <code>{parallel:.2f} VES/USD</code>" if parallel is not None else "Paralelo:  N/A",
@@ -177,31 +179,38 @@ def _status_message() -> str:
     ok_emoji = "🟢" if data.get("ok") else "🔴"
     bcv_emoji = "🟢" if not bcv.get("stale") else "🟡"
 
-    lines = [
-        "<b>Estado del agente</b>",
-        "─" * 16,
-        f"Datos:   {ok_emoji} última lectura hace {data.get('hours_since', '?')}h",
-        f"BCV:     {bcv_emoji} actualizado hace {bcv.get('hours_since_update', '?')}h",
-    ]
-    return "\n".join(lines)
+    data_line = (
+        f"Datos:   {ok_emoji} última lectura hace {data['hours_since']}h"
+        if "hours_since" in data
+        else f"Datos:   {ok_emoji} sin datos aún"
+    )
+    bcv_line = (
+        f"BCV:     {bcv_emoji} actualizado hace {bcv['hours_since_update']}h"
+        if bcv.get("last_update")
+        else f"BCV:     {bcv_emoji} sin datos aún"
+    )
+
+    return "\n".join(["<b>Estado del agente</b>", "─" * 16, data_line, bcv_line])
 
 
 def _handle_command(text: str) -> str:
     t = (text or "").lower().strip()
 
-    if t in ["/start", "/help", "/ayuda", "ayuda", "help"]:
+    try:
+        if t in ["/start", "/help", "/ayuda", "ayuda", "help"]:
+            return _help_message()
+        if any(kw in t for kw in ["semana", "7 dias", "7 días", "weekly", "week"]):
+            return _week_message()
+        if any(kw in t for kw in ["24h", "historia", "history", "ayer"]):
+            return _history_24h_message()
+        if any(kw in t for kw in ["estado", "status", "salud", "health"]):
+            return _status_message()
+        if any(kw in t for kw in ["tasa", "dolar", "dólar", "cambio", "rate", "/rate"]):
+            return _current_rate_message()
         return _help_message()
-    if any(kw in t for kw in ["semana", "7 dias", "7 días", "weekly", "week"]):
-        return _week_message()
-    if any(kw in t for kw in ["24h", "historia", "history", "ayer"]):
-        return _history_24h_message()
-    if any(kw in t for kw in ["estado", "status", "salud", "health"]):
-        return _status_message()
-    if any(kw in t for kw in ["tasa", "dolar", "dólar", "cambio", "rate",
-                                "cómo", "como", "está", "esta", "ahora",
-                                "hoy", "actual", "/rate"]):
-        return _current_rate_message()
-    return _help_message()
+    except Exception as e:
+        logger.exception(f"Command handler error for {text!r}: {e}")
+        return "Hubo un error temporal procesando tu consulta. Intenta de nuevo en un momento."
 
 
 def poll_for_messages(long_poll: bool = False):

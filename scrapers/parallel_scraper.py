@@ -60,27 +60,6 @@ def _request_with_retry(url, retries=2, **kwargs):
     raise last_err
 
 
-def fetch_pydolarve() -> dict:
-    result = {"rate": None, "timestamp": _now_iso(), "source": "pydolarve.org", "error": None}
-    try:
-        resp = _request_with_retry("https://pydolarve.org/api/v1/dollar?page=criptodolar")
-        data = resp.json()
-        monitors = data.get("monitors", {})
-        for key in ["enparalelovzla", "paralelo", "dolartoday"]:
-            price = monitors.get(key, {}).get("price")
-            if price:
-                rate = round(float(price), 4)
-                if MIN_RATE < rate < MAX_RATE:
-                    result["rate"] = rate
-                    logger.info(f"pydolarve.org ({key}): {rate}")
-                    return result
-        result["error"] = "No valid rate key in response"
-    except Exception as e:
-        result["error"] = str(e)
-        logger.warning(f"pydolarve.org failed: {e}")
-    return result
-
-
 def fetch_dolarapi_ve() -> dict:
     result = {"rate": None, "timestamp": _now_iso(), "source": "ve.dolarapi.com", "error": None}
     try:
@@ -114,48 +93,6 @@ def fetch_dolarapi_ve() -> dict:
     return result
 
 
-def scrape_monitor_dolar() -> dict:
-    result = {"rate": None, "timestamp": _now_iso(),
-              "source": "monitordolarvenezuela.com", "error": None}
-    try:
-        resp = _request_with_retry("https://monitordolarvenezuela.com/")
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        for selector in [
-            ("div", {"class": re.compile(r"rate|precio|dolar|price", re.I)}),
-            ("p", {"class": re.compile(r"rate|precio|dolar|price", re.I)}),
-            ("h1", {}), ("h2", {}), ("h3", {}),
-        ]:
-            tag_name, attrs = selector
-            elements = soup.find_all(tag_name, attrs) if attrs else soup.find_all(tag_name)
-            for el in elements:
-                rate = parse_rate(el.get_text(strip=True))
-                if rate and MIN_RATE < rate < MAX_RATE:
-                    result["rate"] = rate
-                    logger.info(f"monitordolar (strategy 1): {rate}")
-                    return result
-
-        # Regex over text
-        text = soup.get_text()
-        matches = re.findall(r"\b(\d{1,7}[.,]\d{2,6})\b", text)
-        candidates = []
-        for m in matches:
-            rate = parse_rate(m)
-            if rate and MIN_RATE < rate < MAX_RATE:
-                candidates.append(rate)
-        if candidates:
-            candidates.sort()
-            result["rate"] = candidates[len(candidates) // 2]
-            logger.info(f"monitordolar (regex median): {result['rate']}")
-            return result
-
-        result["error"] = "Rate not found in page"
-    except Exception as e:
-        result["error"] = str(e)
-        logger.warning(f"monitordolar failed: {e}")
-    return result
-
-
 def scrape_dolartoday() -> dict:
     result = {"rate": None, "timestamp": _now_iso(), "source": "dolartoday.com", "error": None}
     try:
@@ -183,7 +120,7 @@ def scrape_dolartoday() -> dict:
 
 def get_parallel_rate() -> dict:
     """Try API sources first (more reliable), then scraped sources."""
-    for fn in [fetch_pydolarve, fetch_dolarapi_ve, scrape_monitor_dolar, scrape_dolartoday]:
+    for fn in [fetch_dolarapi_ve, scrape_dolartoday]:
         result = fn()
         if result["rate"]:
             return result

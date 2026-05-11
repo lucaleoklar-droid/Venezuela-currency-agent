@@ -37,11 +37,15 @@ Genera el informe diario de cambio para el día de hoy. Datos:
 Alertas activas hoy: {active_alerts}
 
 Formato del mensaje:
-Línea 1: Resumen de una frase (tasa + brecha + estado)
-Línea 2-3: Recomendación concreta
-Línea 4: Una advertencia si aplica (omitir si no hay nada urgente)
+Línea 1: Exactamente "Acción: <CONVERTIR|ESPERAR|NEUTRAL>" según las condiciones para convertir bolívares a dólares hoy:
+  - CONVERTIR: condiciones favorables (paralelo bajando, brecha baja, tendencia a la baja)
+  - ESPERAR: condiciones desfavorables (tasas subiendo, brecha ampliándose, momentum al alza)
+  - NEUTRAL: estable o poco claro
+Línea 2: Resumen de una frase (tasa + brecha + estado)
+Línea 3-4: Recomendación concreta
+Línea 5: Una advertencia si aplica (omitir si no hay nada urgente)
 
-Máximo 4 líneas. Español directo. Sin emojis en el texto, usa texto plano."""
+Máximo 5 líneas. Español directo. Sin emojis en el texto, usa texto plano."""
 
 
 WEEKLY_REPORT_PROMPT = """Genera el reporte semanal de divisas Venezuela para el negocio hotelero.

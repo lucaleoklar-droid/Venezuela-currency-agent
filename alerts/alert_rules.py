@@ -6,7 +6,7 @@ from db.db import (
 )
 from analysis.analyzer import check_spike_alerts, build_spike_message
 from alerts.telegram_bot import send_alert
-from scrapers.scraper_health import check_bcv_freshness
+from scrapers.scraper_health import check_bcv_freshness, check_parallel_freshness
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,15 @@ def process_alerts():
         alerts.append({
             "type": "bcv_stale",
             "detail": bcv_health["message"],
+            "bcv_rate": None, "parallel_rate": None, "spread_pct": None,
+            "alert_type": "STALE",
+        })
+
+    parallel_health = check_parallel_freshness()
+    if parallel_health["stale"]:
+        alerts.append({
+            "type": "parallel_stale",
+            "detail": parallel_health["message"],
             "bcv_rate": None, "parallel_rate": None, "spread_pct": None,
             "alert_type": "STALE",
         })

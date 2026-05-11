@@ -1,10 +1,11 @@
 import logging
 from datetime import datetime, timezone
-from db.db import get_last_bcv_update, get_latest_rate
+from db.db import get_last_bcv_update, get_latest_rate, get_connection
 
 logger = logging.getLogger(__name__)
 
 BCV_STALE_HOURS = 48  # BCV doesn't update on weekends
+PARALLEL_STALE_HOURS = 3  # Parallel updates throughout the day; >3h is suspicious
 
 
 def hours_since(timestamp_str: str) -> float:
@@ -30,6 +31,24 @@ def check_bcv_freshness() -> dict:
         "hours_since_update": round(hours, 1),
         "stale": stale,
         "message": f"BCV data is {round(hours, 1)}h old. Using parallel as reference." if stale else None,
+    }
+
+
+def check_parallel_freshness() -> dict:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT timestamp FROM rates WHERE parallel_rate IS NOT NULL ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    last_update = row["timestamp"] if row else None
+    hours = hours_since(last_update)
+    stale = hours > PARALLEL_STALE_HOURS
+    return {
+        "source": "parallel",
+        "last_update": last_update,
+        "hours_since_update": round(hours, 1),
+        "stale": stale,
+        "message": f"Parallel rate is {round(hours, 1)}h old — scraper may be down" if stale else None,
     }
 
 
