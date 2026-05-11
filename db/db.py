@@ -66,6 +66,12 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_date ON daily_analysis(date);
         """)
 
+        # Migrations for legacy databases — add columns that may be missing
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        for col in ["bcv_rate", "parallel_rate", "spread_pct"]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} REAL")
+
 
 def insert_rate(timestamp: str, bcv_rate: float, parallel_rate: float,
                 spread_pct: float, source: str, notes: str = None):
