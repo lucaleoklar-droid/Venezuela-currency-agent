@@ -103,10 +103,26 @@ def process_alerts():
     deliver_queued_alerts()
 
 
+STALE_ALERT_MAX_AGE_MIN = 10  # Alerts older than this never get delivered
+
+
 def deliver_queued_alerts():
-    """Send any undelivered alerts via Telegram."""
+    """Send any undelivered alerts via Telegram. Drop alerts older than the max age."""
+    from db.db import mark_alert_delivered as _mark
     pending = get_undelivered_alerts()
+    now = _utcnow()
+
     for alert in pending:
+        # Drop alerts that are too old to be relevant (prevents backlog spam)
+        try:
+            queued_at = datetime.fromisoformat(alert["timestamp"])
+            age_min = (now - queued_at).total_seconds() / 60
+            if age_min > STALE_ALERT_MAX_AGE_MIN:
+                logger.info(f"Dropping stale alert id={alert['id']} (age: {age_min:.1f} min)")
+                _mark(alert["id"])
+                continue
+        except (ValueError, TypeError):
+            pass
         success = send_alert(
             alert_type=alert["alert_type"],
             message=alert["message"],
