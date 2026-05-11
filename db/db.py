@@ -4,6 +4,7 @@ from datetime import datetime, date
 from contextlib import contextmanager
 
 _data_dir = os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__)))
+os.makedirs(_data_dir, exist_ok=True)
 DB_PATH = os.path.join(_data_dir, "venezuela_currency.db")
 
 
