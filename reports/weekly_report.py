@@ -1,31 +1,48 @@
 import logging
 from datetime import datetime
-from db.db import get_weekly_data, get_rates_last_n_days
+from db.db import get_weekly_data
 from analysis.prompts import WEEKLY_REPORT_PROMPT
 from analysis.claude_client import analyze
 
 logger = logging.getLogger(__name__)
 
 
-def find_best_day(daily_rows: list) -> str:
-    if not daily_rows:
+def _fmt(val, precision=2, suffix="", na="N/A"):
+    """Format a numeric value or return na if None."""
+    if val is None:
+        return na
+    return f"{val:.{precision}f}{suffix}"
+
+
+def find_best_day_for_ves_to_usd(daily_rows: list) -> str:
+    """Best day to convert VES → USD = lowest parallel rate (less VES needed per dollar)."""
+    valid = [r for r in daily_rows if r.get("avg_parallel") is not None]
+    if not valid:
         return "sin datos"
-    # Best day = lowest spread (cheapest to convert bolivars to USD)
-    best = min(daily_rows, key=lambda r: r["avg_spread"] or 999)
-    return best["day"] if best else "sin datos"
+    return min(valid, key=lambda r: r["avg_parallel"])["day"]
+
+
+def find_best_day_for_usd_to_ves(daily_rows: list) -> str:
+    """Best day to convert USD → VES = highest parallel rate (more VES per dollar)."""
+    valid = [r for r in daily_rows if r.get("avg_parallel") is not None]
+    if not valid:
+        return "sin datos"
+    return max(valid, key=lambda r: r["avg_parallel"])["day"]
 
 
 def build_weekly_table(daily_rows: list) -> str:
-    lines = ["Fecha      | BCV avg | Paralelo avg | Brecha avg | Brecha min | Brecha max"]
-    lines.append("-" * 72)
+    lines = [
+        "Fecha      | BCV avg  | Paralelo avg | Brecha avg | Brecha min | Brecha max",
+        "-" * 76,
+    ]
     for r in daily_rows:
         lines.append(
             f"{r['day']} | "
-            f"{r['avg_bcv']:.2f if r['avg_bcv'] else 'N/A':>7} | "
-            f"{r['avg_parallel']:.2f if r['avg_parallel'] else 'N/A':>12} | "
-            f"{r['avg_spread']:.1f if r['avg_spread'] else 'N/A':>10}% | "
-            f"{r['min_spread']:.1f if r['min_spread'] else 'N/A':>10}% | "
-            f"{r['max_spread']:.1f if r['max_spread'] else 'N/A':>10}%"
+            f"{_fmt(r['avg_bcv']):>8} | "
+            f"{_fmt(r['avg_parallel']):>12} | "
+            f"{_fmt(r['avg_spread'], precision=1, suffix='%'):>10} | "
+            f"{_fmt(r['min_spread'], precision=1, suffix='%'):>10} | "
+            f"{_fmt(r['max_spread'], precision=1, suffix='%'):>10}"
         )
     return "\n".join(lines)
 
@@ -37,18 +54,23 @@ def generate_report() -> str:
         return "Sin datos suficientes para generar el reporte semanal."
 
     weekly_table = build_weekly_table(daily_rows)
-    all_spreads = [r["avg_spread"] for r in daily_rows if r["avg_spread"]]
+    all_spreads = [r["avg_spread"] for r in daily_rows if r["avg_spread"] is not None]
+    all_max_spreads = [r["max_spread"] for r in daily_rows if r["max_spread"] is not None]
+    all_min_spreads = [r["min_spread"] for r in daily_rows if r["min_spread"] is not None]
+
     avg_spread = sum(all_spreads) / len(all_spreads) if all_spreads else None
-    max_spread = max(r["max_spread"] for r in daily_rows if r["max_spread"]) if daily_rows else None
-    min_spread = min(r["min_spread"] for r in daily_rows if r["min_spread"]) if daily_rows else None
-    best_day = find_best_day(daily_rows)
+    max_spread = max(all_max_spreads) if all_max_spreads else None
+    min_spread = min(all_min_spreads) if all_min_spreads else None
+
+    best_for_ves_usd = find_best_day_for_ves_to_usd(daily_rows)
+    best_for_usd_ves = find_best_day_for_usd_to_ves(daily_rows)
 
     prompt = WEEKLY_REPORT_PROMPT.format(
         weekly_table=weekly_table,
-        avg_spread=f"{avg_spread:.1f}" if avg_spread else "N/A",
-        max_spread=f"{max_spread:.1f}" if max_spread else "N/A",
-        min_spread=f"{min_spread:.1f}" if min_spread else "N/A",
-        best_day=best_day,
+        avg_spread=_fmt(avg_spread, precision=1),
+        max_spread=_fmt(max_spread, precision=1),
+        min_spread=_fmt(min_spread, precision=1),
+        best_day=f"{best_for_ves_usd} (mejor para vender bolívares)",
         alert_count=alert_count,
     )
 
@@ -59,8 +81,9 @@ def generate_report() -> str:
     report = f"# Reporte Semanal Venezuela Divisas\n{week_str}\n\n"
     report += "## Datos de la semana\n\n"
     report += f"```\n{weekly_table}\n```\n\n"
-    report += f"**Alertas disparadas esta semana:** {alert_count}\n"
-    report += f"**Mejor dia para convertir:** {best_day}\n\n"
+    report += f"**Alertas disparadas:** {alert_count}\n"
+    report += f"**Mejor día para vender bolívares (VES → USD):** {best_for_ves_usd}\n"
+    report += f"**Mejor día para vender dólares (USD → VES):** {best_for_usd_ves}\n\n"
     report += "## Análisis\n\n"
     report += analysis
 

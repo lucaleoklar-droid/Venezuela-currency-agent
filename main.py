@@ -1,7 +1,6 @@
 """
 Venezuela Currency Intelligence Agent — main scheduler.
-Run this script continuously (or as a Windows service).
-It handles all scheduling internally.
+Runs continuously; handles all scheduling internally.
 """
 import sys
 import os
@@ -10,36 +9,63 @@ import schedule
 import time
 from datetime import datetime, timezone
 
-# Ensure project root is on the path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Use DATA_DIR for log file so it survives Railway restarts
+_DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
+os.makedirs(_DATA_DIR, exist_ok=True)
+_LOG_PATH = os.path.join(_DATA_DIR, "agent.log")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("agent.log", encoding="utf-8"),
+        logging.FileHandler(_LOG_PATH, encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("main")
 
-from db.db import init_db, insert_rate
+from db.db import init_db, insert_rate, upsert_daily_analysis, get_connection
 from scrapers.bcv_scraper import scrape_bcv
 from scrapers.parallel_scraper import get_parallel_rate
 from alerts.alert_rules import process_alerts
 from analysis.analyzer import run_analysis
-from db.db import upsert_daily_analysis
 from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
 from reports.github_publisher import commit_weekly_report
 
 
+def _utcnow_iso():
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+
+def _utctoday():
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _derive_urgency(claude_text: str, spread_pct: float | None) -> str:
+    """Derive urgency from spread level + Claude's response keywords."""
+    text = (claude_text or "").lower()
+    if spread_pct is not None and spread_pct > 75:
+        return "critical"
+    if spread_pct is not None and spread_pct > 50:
+        return "high"
+    if any(kw in text for kw in ["urgente", "crític", "inmediat", "emergencia"]):
+        return "high"
+    if spread_pct is not None and spread_pct > 35:
+        return "medium"
+    if any(kw in text for kw in ["atención", "vigil", "considerar"]):
+        return "medium"
+    return "low"
+
+
 def scrape_and_store():
     logger.info("--- Scrape cycle ---")
-    ts = datetime.utcnow().isoformat()
+    ts = _utcnow_iso()
 
     bcv_result = scrape_bcv()
     parallel_result = get_parallel_rate()
@@ -73,11 +99,10 @@ def scrape_and_store():
         )
         logger.info(f"Stored: BCV={bcv_rate}, Parallel={parallel_rate}, Spread={spread_pct}%")
 
-    # Check for alerts after every scrape
     try:
         process_alerts()
     except Exception as e:
-        logger.error(f"Alert processing error: {e}")
+        logger.exception(f"Alert processing error: {e}")
 
 
 def run_analysis_job():
@@ -85,17 +110,17 @@ def run_analysis_job():
     try:
         result = run_analysis()
         if "error" not in result:
-            today = datetime.utcnow().date().isoformat()
+            urgency = _derive_urgency(result.get("claude_response"), result.get("spread_pct"))
             upsert_daily_analysis(
-                date_str=today,
+                date_str=_utctoday(),
                 claude_summary=result["claude_response"],
                 recommendation=result["claude_response"],
-                urgency_level="unknown",
+                urgency_level=urgency,
                 raw_response=str(result),
             )
-            logger.info("Analysis stored")
+            logger.info(f"Analysis stored (urgency={urgency})")
     except Exception as e:
-        logger.error(f"Analysis job error: {e}")
+        logger.exception(f"Analysis job error: {e}")
 
 
 def run_daily_brief():
@@ -103,7 +128,7 @@ def run_daily_brief():
     try:
         send_daily_brief()
     except Exception as e:
-        logger.error(f"Daily brief error: {e}")
+        logger.exception(f"Daily brief error: {e}")
 
 
 def run_weekly_report():
@@ -111,42 +136,41 @@ def run_weekly_report():
     try:
         report = generate_report()
         date_str = datetime.now().strftime("%Y-%m-%d")
-        data_dir = os.getenv("DATA_DIR", os.path.dirname(__file__))
-        briefs_dir = os.path.join(data_dir, "briefs")
+        briefs_dir = os.path.join(_DATA_DIR, "briefs")
         os.makedirs(briefs_dir, exist_ok=True)
         local_path = os.path.join(briefs_dir, f"weekly-{date_str}.md")
         with open(local_path, "w", encoding="utf-8") as f:
             f.write(report)
-        logger.info(f"Weekly report saved locally: {local_path}")
-        # Commit to GitHub
+        logger.info(f"Weekly report saved: {local_path}")
         commit_weekly_report(report)
     except Exception as e:
-        logger.error(f"Weekly report error: {e}")
+        logger.exception(f"Weekly report error: {e}")
+
+
+def heartbeat():
+    """Periodic health log — confirms the agent is alive."""
+    from scrapers.scraper_health import get_health_report
+    h = get_health_report()
+    logger.info(f"Heartbeat: data_freshness={h['data_freshness']}, bcv={h['bcv_freshness']}")
 
 
 def setup_schedule():
-    # Scrape every 30 minutes
     schedule.every(30).minutes.do(scrape_and_store)
-
-    # Analysis every 4 hours
     schedule.every(4).hours.do(run_analysis_job)
-
-    # Daily brief at 11:00 UTC = 07:00 Venezuela time (UTC-4)
-    schedule.every().day.at("11:00").do(run_daily_brief)
-
-    # Weekly report every Monday at 12:00 UTC
+    schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
     schedule.every().monday.at("12:00").do(run_weekly_report)
+    schedule.every(6).hours.do(heartbeat)
 
-    logger.info("Schedule configured:")
-    logger.info("  - Scrape: every 30 minutes")
-    logger.info("  - Analysis: every 4 hours")
-    logger.info("  - Daily brief: 11:00 UTC (07:00 VET)")
-    logger.info("  - Weekly report: Mondays 12:00 UTC")
+    logger.info("Schedule:")
+    logger.info("  Scrape:        every 30 min")
+    logger.info("  Analysis:      every 4 hours")
+    logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
+    logger.info("  Weekly report: Mondays 12:00 UTC")
+    logger.info("  Heartbeat:     every 6 hours")
 
 
 def clear_stale_alerts():
     """On startup, mark any undelivered alerts as delivered so old backlogs don't spam."""
-    from db.db import get_connection
     conn = get_connection()
     count = conn.execute("SELECT COUNT(*) FROM alerts WHERE delivered=0").fetchone()[0]
     if count:
@@ -157,20 +181,24 @@ def clear_stale_alerts():
 
 
 def main():
-    logger.info("Venezuela Currency Agent starting...")
+    logger.info("=" * 50)
+    logger.info("Venezuela Currency Agent starting")
+    logger.info(f"DATA_DIR: {_DATA_DIR}")
+    logger.info("=" * 50)
+
     init_db()
     logger.info("Database initialized")
 
     clear_stale_alerts()
-
-    # Run an immediate scrape on startup
     scrape_and_store()
-
     setup_schedule()
     logger.info("Scheduler running. Press Ctrl+C to stop.")
 
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            logger.exception(f"Scheduler error: {e}")
         time.sleep(30)
 
 

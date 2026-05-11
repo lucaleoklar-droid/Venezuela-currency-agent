@@ -1,6 +1,8 @@
 import os
 import requests
 import logging
+import html
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,6 +19,26 @@ ALERT_HEADERS = {
     "STALE":       ("⚠️", "DATOS BCV DESACTUALIZADOS"),
 }
 
+SPANISH_MONTHS = {
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
+    7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+}
+SPANISH_WEEKDAYS = {
+    0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves",
+    4: "viernes", 5: "sábado", 6: "domingo",
+}
+
+
+def _spanish_date(dt: datetime) -> str:
+    weekday = SPANISH_WEEKDAYS[dt.weekday()]
+    month = SPANISH_MONTHS[dt.month]
+    return f"{weekday.capitalize()} {dt.day} de {month}"
+
+
+def _escape(text: str) -> str:
+    """Escape <, >, & for Telegram HTML mode. Preserves bold/code tags if pre-formatted."""
+    return html.escape(text, quote=False)
+
 
 def send_message(text: str) -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -29,14 +51,17 @@ def send_message(text: str) -> bool:
     try:
         resp = requests.post(
             TELEGRAM_API.format(token=token),
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                  "disable_web_page_preview": True},
             timeout=10,
         )
         resp.raise_for_status()
-        logger.info("Telegram message sent successfully")
+        logger.info("Telegram message sent")
         return True
     except requests.RequestException as e:
-        logger.error(f"Telegram send failed: {e}")
+        # Log the response body if available for debugging HTML parse failures
+        body = getattr(e.response, "text", "") if hasattr(e, "response") else ""
+        logger.error(f"Telegram send failed: {e}. Response: {body[:200]}")
         return False
 
 
@@ -45,7 +70,7 @@ def send_alert(alert_type: str, message: str, bcv_rate=None, parallel_rate=None,
 
     lines = [f"{emoji} <b>{title}</b>", "─" * 16]
 
-    if bcv_rate and parallel_rate and spread_pct is not None:
+    if bcv_rate is not None and parallel_rate is not None and spread_pct is not None:
         lines += [
             f"BCV:       <code>{bcv_rate:.2f} VES/USD</code>",
             f"Paralelo:  <code>{parallel_rate:.2f} VES/USD</code>",
@@ -53,25 +78,26 @@ def send_alert(alert_type: str, message: str, bcv_rate=None, parallel_rate=None,
             "",
         ]
 
-    lines.append(message)
+    # Escape Claude's prose so & or < in the response don't break HTML parse
+    lines.append(_escape(message))
     return send_message("\n".join(lines))
 
 
 def send_daily_brief(bcv_rate, parallel_rate, spread_pct, spread_status,
                      change_24h, trend_7d, analysis_text) -> bool:
-    from datetime import datetime
-
     status_emoji = {"NORMAL": "🟢", "ELEVADA": "🟡", "CRITICA": "🔴"}.get(spread_status, "⚪")
-    change_emoji = "📈" if change_24h > 0 else "📉" if change_24h < 0 else "➡️"
-    import locale
-    try:
-        locale.setlocale(locale.LC_TIME, "es_VE.UTF-8")
-    except Exception:
-        try:
-            locale.setlocale(locale.LC_TIME, "es_ES.UTF-8")
-        except Exception:
-            pass
-    date_str = datetime.now().strftime("%A %d de %B").lower().capitalize()
+
+    # Only show direction emoji for moves > 0.5% (smaller moves are noise)
+    if change_24h is None:
+        change_str = "N/A"
+    elif change_24h > 0.5:
+        change_str = f"📈 +{change_24h:.1f}%"
+    elif change_24h < -0.5:
+        change_str = f"📉 {change_24h:.1f}%"
+    else:
+        change_str = f"➡️ {change_24h:+.1f}%"
+
+    date_str = _spanish_date(datetime.now())
 
     lines = [
         f"<b>Venezuela Divisas — {date_str}</b>",
@@ -79,9 +105,9 @@ def send_daily_brief(bcv_rate, parallel_rate, spread_pct, spread_status,
         f"BCV:       <code>{bcv_rate:.2f} VES/USD</code>",
         f"Paralelo:  <code>{parallel_rate:.2f} VES/USD</code>",
         f"Brecha:    <b>{spread_pct:.1f}%</b>  {status_emoji} {spread_status}",
-        f"24h:       {change_emoji} {change_24h:+.1f}%",
-        f"Tendencia: {trend_7d}",
+        f"24h:       {change_str}",
+        f"Tendencia: {_escape(trend_7d)}",
         "",
-        analysis_text,
+        _escape(analysis_text),
     ]
     return send_message("\n".join(lines))

@@ -46,7 +46,10 @@ def init_db():
                 timestamp TEXT NOT NULL,
                 alert_type TEXT,
                 message TEXT,
-                delivered INTEGER DEFAULT 0
+                delivered INTEGER DEFAULT 0,
+                bcv_rate REAL,
+                parallel_rate REAL,
+                spread_pct REAL
             );
 
             CREATE TABLE IF NOT EXISTS daily_analysis (
@@ -108,7 +111,7 @@ def get_avg_spread(days: int):
             "WHERE timestamp >= datetime('now', ?) AND spread_pct IS NOT NULL",
             (f"-{days} days",)
         ).fetchone()
-    return row["avg"] if row and row["avg"] else None
+    return row["avg"] if row and row["avg"] is not None else None
 
 
 def get_last_bcv_update():
@@ -119,11 +122,18 @@ def get_last_bcv_update():
     return row["timestamp"] if row else None
 
 
-def insert_alert(timestamp: str, alert_type: str, message: str):
+def insert_alert(timestamp: str, alert_type: str, message: str,
+                 bcv_rate=None, parallel_rate=None, spread_pct=None):
     with db() as conn:
+        # Add missing columns to legacy DBs
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        for col in ["bcv_rate", "parallel_rate", "spread_pct"]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} REAL")
         conn.execute(
-            "INSERT INTO alerts (timestamp, alert_type, message) VALUES (?, ?, ?)",
-            (timestamp, alert_type, message)
+            "INSERT INTO alerts (timestamp, alert_type, message, bcv_rate, parallel_rate, spread_pct) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (timestamp, alert_type, message, bcv_rate, parallel_rate, spread_pct)
         )
 
 

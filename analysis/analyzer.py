@@ -7,23 +7,37 @@ from analysis.claude_client import analyze
 logger = logging.getLogger(__name__)
 
 
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def compute_change_pct(rates: list, hours: int) -> float | None:
+    """Compute the % change in parallel rate between latest and `hours` ago."""
     if len(rates) < 2:
         return None
-    # rates are newest-first from get_recent_rates
     current = rates[0].get("parallel_rate")
-    cutoff_ts = datetime.utcnow().timestamp() - hours * 3600
-    # Find the rate closest to `hours` ago
+    if not current:
+        return None
+
+    cutoff_ts = _utcnow().timestamp() - hours * 3600
     past_rate = None
     for r in rates:
         try:
             ts = datetime.fromisoformat(r["timestamp"]).timestamp()
-        except Exception:
+        except (ValueError, TypeError):
             continue
-        if ts <= cutoff_ts:
-            past_rate = r.get("parallel_rate")
+        if ts <= cutoff_ts and r.get("parallel_rate"):
+            past_rate = r["parallel_rate"]
             break
-    if not current or not past_rate or past_rate == 0:
+
+    # If no data old enough exists, use the OLDEST available reading as a best-effort proxy
+    if past_rate is None:
+        oldest = next((r for r in reversed(rates) if r.get("parallel_rate")), None)
+        if not oldest or oldest is rates[0]:
+            return None
+        past_rate = oldest["parallel_rate"]
+
+    if past_rate == 0:
         return None
     return round((current - past_rate) / past_rate * 100, 2)
 
@@ -31,21 +45,22 @@ def compute_change_pct(rates: list, hours: int) -> float | None:
 def get_trend_description(rates_asc: list, days: int = 7) -> str:
     if len(rates_asc) < 3:
         return "insuficientes datos"
-    # Group by day, get avg per day
     daily = {}
     for r in rates_asc:
         day = r["timestamp"][:10]
-        if day not in daily:
-            daily[day] = []
         if r.get("parallel_rate"):
-            daily[day].append(r["parallel_rate"])
+            daily.setdefault(day, []).append(r["parallel_rate"])
     avgs = [sum(v) / len(v) for v in daily.values() if v]
     if len(avgs) < 2:
         return "sin tendencia clara"
-    # Simple linear direction
-    first_half = sum(avgs[: len(avgs) // 2]) / (len(avgs) // 2)
-    second_half = sum(avgs[len(avgs) // 2:]) / (len(avgs) - len(avgs) // 2)
+
+    mid = len(avgs) // 2
+    first_half = sum(avgs[:mid]) / mid if mid else avgs[0]
+    second_half = sum(avgs[mid:]) / (len(avgs) - mid)
+    if first_half == 0:
+        return "sin tendencia clara"
     diff_pct = (second_half - first_half) / first_half * 100
+
     if diff_pct > 2:
         return f"subiendo ({diff_pct:+.1f}%)"
     elif diff_pct < -2:
@@ -72,21 +87,21 @@ def format_7day_table(rates_7d: list) -> str:
     for r in rates_7d:
         day = r["timestamp"][:10]
         daily.setdefault(day, {"bcv": [], "parallel": [], "spread": []})
-        if r.get("bcv_rate"):
+        if r.get("bcv_rate") is not None:
             daily[day]["bcv"].append(r["bcv_rate"])
-        if r.get("parallel_rate"):
+        if r.get("parallel_rate") is not None:
             daily[day]["parallel"].append(r["parallel_rate"])
-        if r.get("spread_pct"):
+        if r.get("spread_pct") is not None:
             daily[day]["spread"].append(r["spread_pct"])
 
-    lines = ["Fecha      | BCV    | Paralelo | Brecha"]
-    lines.append("-" * 42)
+    lines = ["Fecha      | BCV     | Paralelo | Brecha"]
+    lines.append("-" * 44)
     for day in sorted(daily.keys()):
         d = daily[day]
         bcv = f"{sum(d['bcv'])/len(d['bcv']):.2f}" if d["bcv"] else "N/A"
         par = f"{sum(d['parallel'])/len(d['parallel']):.2f}" if d["parallel"] else "N/A"
         spr = f"{sum(d['spread'])/len(d['spread']):.1f}%" if d["spread"] else "N/A"
-        lines.append(f"{day} | {bcv:>6} | {par:>8} | {spr:>6}")
+        lines.append(f"{day} | {bcv:>7} | {par:>8} | {spr:>6}")
     return "\n".join(lines)
 
 
@@ -99,21 +114,21 @@ def run_analysis() -> dict:
         logger.warning("No rate data available for analysis")
         return {"error": "No data"}
 
-    bcv_rate = latest.get("bcv_rate", "N/A")
-    parallel_rate = latest.get("parallel_rate", "N/A")
-    spread_pct = latest.get("spread_pct", "N/A")
-    change_24h = compute_change_pct(rates_24h, 24) or 0.0
+    bcv_rate = latest.get("bcv_rate")
+    parallel_rate = latest.get("parallel_rate")
+    spread_pct = latest.get("spread_pct")
+    change_24h = compute_change_pct(rates_24h, 24)
     trend_7d = get_trend_description(rates_7d)
     avg_spread_30d = get_avg_spread(30)
     table = format_7day_table(rates_7d)
 
     prompt = CORE_ANALYSIS_PROMPT.format(
-        bcv_rate=bcv_rate,
-        parallel_rate=parallel_rate,
-        spread_pct=spread_pct,
-        change_24h=f"{change_24h:+.2f}" if isinstance(change_24h, float) else change_24h,
+        bcv_rate=f"{bcv_rate:.2f}" if bcv_rate is not None else "N/A",
+        parallel_rate=f"{parallel_rate:.2f}" if parallel_rate is not None else "N/A",
+        spread_pct=f"{spread_pct:.1f}" if spread_pct is not None else "N/A",
+        change_24h=f"{change_24h:+.2f}" if change_24h is not None else "N/A",
         trend_7d=trend_7d,
-        avg_spread_30d=f"{avg_spread_30d:.1f}" if isinstance(avg_spread_30d, (int, float)) else "N/A",
+        avg_spread_30d=f"{avg_spread_30d:.1f}" if avg_spread_30d is not None else "N/A",
         last_7_days_table=table,
     )
 
@@ -121,7 +136,7 @@ def run_analysis() -> dict:
     response = analyze(prompt)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": _utcnow().isoformat(),
         "bcv_rate": bcv_rate,
         "parallel_rate": parallel_rate,
         "spread_pct": spread_pct,
@@ -132,7 +147,7 @@ def run_analysis() -> dict:
 
 
 def check_spike_alerts() -> list[dict]:
-    """Returns list of alert dicts if any thresholds are breached."""
+    """Returns alert dicts when thresholds are breached."""
     alerts = []
     rates_24h = get_recent_rates(24)
     rates_12h = get_recent_rates(12)
@@ -145,9 +160,9 @@ def check_spike_alerts() -> list[dict]:
     bcv = latest.get("bcv_rate")
     spread = latest.get("spread_pct")
 
-    # Rate spike > 10% in 24h (5-10% is normal daily noise in Venezuela 2025)
+    # Rate spike > 10% in 24h
     change_24h = compute_change_pct(rates_24h, 24)
-    if change_24h and abs(change_24h) > 10:
+    if change_24h is not None and abs(change_24h) > 10:
         direction = "subió" if change_24h > 0 else "bajó"
         alerts.append({
             "type": "rate_spike_24h",
@@ -156,9 +171,9 @@ def check_spike_alerts() -> list[dict]:
             "alert_type": "SPIKE",
         })
 
-    # Rate drop > 8% in 12h (opportunity — meaningful move in current market)
+    # Rate drop > 8% in 12h
     change_12h = compute_change_pct(rates_12h, 12)
-    if change_12h and change_12h < -8:
+    if change_12h is not None and change_12h < -8:
         alerts.append({
             "type": "rate_drop_12h",
             "detail": f"La tasa bajó {abs(change_12h):.1f}% en las últimas 12h — posible oportunidad de conversión",
@@ -166,24 +181,22 @@ def check_spike_alerts() -> list[dict]:
             "alert_type": "OPPORTUNITY",
         })
 
-    # Emergency > 75% (Jan 2026 crisis level — requires immediate action)
-    if spread and spread > 75:
+    # Spread alerts (mutually exclusive, highest severity wins)
+    if spread is not None and spread > 75:
         alerts.append({
             "type": "spread_emergency",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (EMERGENCIA — nivel de crisis)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "CRITICAL",
         })
-    # Critical > 50% (forces operational changes — USD-only pricing)
-    elif spread and spread > 50:
+    elif spread is not None and spread > 50:
         alerts.append({
             "type": "spread_critical",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (CRÍTICA — considerar precios solo en USD)",
             "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
             "alert_type": "CRITICAL",
         })
-    # Elevated > 35% (above 2024-2025 baseline of 20-27%)
-    elif spread and spread > 35:
+    elif spread is not None and spread > 35:
         alerts.append({
             "type": "spread_elevated",
             "detail": f"Brecha entre BCV y paralelo: {spread:.1f}% (ELEVADA — por encima del rango normal 2025)",
@@ -207,9 +220,9 @@ def check_spike_alerts() -> list[dict]:
 def build_spike_message(alert: dict) -> str:
     prompt = SPIKE_ALERT_PROMPT.format(
         alert_type=alert["alert_type"],
-        bcv_rate=alert.get("bcv_rate", "N/A"),
-        parallel_rate=alert.get("parallel_rate", "N/A"),
-        spread_pct=alert.get("spread_pct", "N/A"),
+        bcv_rate=alert.get("bcv_rate") if alert.get("bcv_rate") is not None else "N/A",
+        parallel_rate=alert.get("parallel_rate") if alert.get("parallel_rate") is not None else "N/A",
+        spread_pct=alert.get("spread_pct") if alert.get("spread_pct") is not None else "N/A",
         detail=alert["detail"],
     )
     return analyze(prompt, max_tokens=150)

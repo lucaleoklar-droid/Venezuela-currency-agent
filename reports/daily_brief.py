@@ -34,12 +34,13 @@ def generate_and_send():
     parallel = latest.get("parallel_rate")
     spread = latest.get("spread_pct")
 
-    if not bcv or not parallel:
-        logger.warning("Missing rate data for daily brief")
+    if bcv is None or parallel is None or spread is None:
+        logger.warning("Missing rate data for daily brief — skipping")
         return False
 
     spread_status = get_spread_status(spread)
-    change_24h = compute_change_pct(rates_24h, 24) or 0.0
+    change_24h_raw = compute_change_pct(rates_24h, 24)
+    change_24h = change_24h_raw if change_24h_raw is not None else 0.0
     trend_7d = get_trend_description(rates_7d)
 
     current_avg = get_avg_spread(7)
@@ -75,7 +76,7 @@ def generate_and_send():
     success = send_daily_brief(
         bcv_rate=bcv,
         parallel_rate=parallel,
-        spread_pct=spread or 0,
+        spread_pct=spread,
         spread_status=spread_status,
         change_24h=change_24h,
         trend_7d=trend_7d,

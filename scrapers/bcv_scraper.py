@@ -2,7 +2,8 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import logging
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -15,40 +16,73 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# Plausible VES/USD range (covers historic and accounts for hyperinflation)
+MIN_RATE = 1.0
+MAX_RATE = 1_000_000.0
+
 
 def parse_rate(text: str) -> float | None:
     if not text:
         return None
-    cleaned = text.strip().replace(",", ".").replace("\xa0", "").replace(" ", "")
-    # Remove anything that's not a digit or decimal point
+    cleaned = text.strip().replace("\xa0", "").replace(" ", "")
+    # Spanish decimal style: comma as decimal, period as thousands. Handle both.
+    # If both present, comma is decimal (Spanish): "1.234,56" → "1234.56"
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    else:
+        cleaned = cleaned.replace(",", ".")
     cleaned = re.sub(r"[^\d.]", "", cleaned)
-    # If multiple dots, keep only the last one as decimal
     parts = cleaned.split(".")
     if len(parts) > 2:
         cleaned = "".join(parts[:-1]) + "." + parts[-1]
     try:
         val = float(cleaned)
-        # Sanity check: BCV rate should be between 1 and 10000
-        if 1 < val < 10000:
+        if MIN_RATE < val < MAX_RATE:
             return round(val, 4)
     except ValueError:
         pass
     return None
 
 
+def _fetch_bcv(retries: int = 2) -> str | None:
+    """Fetches BCV homepage with retry on failure."""
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(
+                "https://www.bcv.org.ve/",
+                headers=HEADERS,
+                timeout=20,
+                verify=False,
+            )
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))
+    logger.error(f"BCV fetch failed after retries: {last_err}")
+    return None
+
+
 def scrape_bcv() -> dict:
-    """
-    Scrapes the BCV official VES/USD rate from bcv.org.ve.
-    Returns dict with 'rate', 'timestamp', 'source', 'error'.
-    """
-    result = {"rate": None, "timestamp": datetime.utcnow().isoformat(), "source": "bcv.org.ve", "error": None}
+    """Scrapes the BCV official VES/USD rate from bcv.org.ve."""
+    result = {
+        "rate": None,
+        "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+        "source": "bcv.org.ve",
+        "error": None,
+    }
+
+    html = _fetch_bcv()
+    if html is None:
+        result["error"] = "Failed to fetch BCV homepage"
+        return result
 
     try:
-        resp = requests.get("https://www.bcv.org.ve/", headers=HEADERS, timeout=20, verify=False)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
-        # Strategy 1: div with id="dolar"
+        # Strategy 1: div with id="dolar" (most reliable)
         dolar_div = soup.find("div", id="dolar")
         if dolar_div:
             strong = dolar_div.find("strong")
@@ -56,38 +90,33 @@ def scrape_bcv() -> dict:
                 rate = parse_rate(strong.get_text())
                 if rate:
                     result["rate"] = rate
-                    logger.info(f"BCV rate scraped (strategy 1): {rate}")
+                    logger.info(f"BCV rate (strategy 1, #dolar): {rate}")
                     return result
 
-        # Strategy 2: look for any strong/span near "USD" or "Dólar"
+        # Strategy 2: any tag near USD/Dólar text
         for tag in soup.find_all(["strong", "span", "td"]):
             text = tag.get_text(strip=True)
             rate = parse_rate(text)
-            if rate and 10 < rate < 1000:  # tighter range for plausibility
-                # Check if USD/dolar is nearby
+            if rate and MIN_RATE < rate < MAX_RATE:
                 parent_text = tag.parent.get_text().lower() if tag.parent else ""
                 if any(kw in parent_text for kw in ["usd", "dólar", "dolar", "$"]):
                     result["rate"] = rate
-                    logger.info(f"BCV rate scraped (strategy 2): {rate}")
+                    logger.info(f"BCV rate (strategy 2, USD-adjacent): {rate}")
                     return result
 
-        # Strategy 3: regex over full page text
+        # Strategy 3: regex fallback over full text (allow up to 7 digits before decimal)
         text = soup.get_text()
-        # Look for patterns like "38.50" or "38,50" near "USD" or "dólar"
-        matches = re.findall(r'\b(\d{2,3}[.,]\d{2,4})\b', text)
+        matches = re.findall(r"\b(\d{1,7}[.,]\d{2,6})\b", text)
         for m in matches:
             rate = parse_rate(m)
-            if rate and 10 < rate < 1000:
+            if rate and MIN_RATE < rate < MAX_RATE:
                 result["rate"] = rate
-                logger.info(f"BCV rate scraped (strategy 3, regex): {rate}")
+                logger.info(f"BCV rate (strategy 3, regex): {rate}")
                 return result
 
         result["error"] = "Could not find USD rate in page"
-        logger.warning("BCV scraper: could not find rate in page")
+        logger.warning("BCV scraper: rate not found")
 
-    except requests.RequestException as e:
-        result["error"] = str(e)
-        logger.error(f"BCV scraper request failed: {e}")
     except Exception as e:
         result["error"] = str(e)
         logger.error(f"BCV scraper unexpected error: {e}")
@@ -97,5 +126,4 @@ def scrape_bcv() -> dict:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    r = scrape_bcv()
-    print(r)
+    print(scrape_bcv())

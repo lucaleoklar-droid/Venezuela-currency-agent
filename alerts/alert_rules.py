@@ -1,7 +1,7 @@
 import logging
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from db.db import insert_alert, get_undelivered_alerts, mark_alert_delivered
 from analysis.analyzer import check_spike_alerts, build_spike_message
 from alerts.telegram_bot import send_alert
@@ -9,7 +9,8 @@ from scrapers.scraper_health import check_bcv_freshness
 
 logger = logging.getLogger(__name__)
 
-# Cooldown keyed by alert_type (SPIKE, CRITICAL, etc) — matches what's stored in DB
+# Cooldowns keyed by alert_type. Note: spread alerts all share "CRITICAL"/"WARNING"
+# so going from WARNING→CRITICAL won't be suppressed by a fresh WARNING cooldown.
 ALERT_COOLDOWN_HOURS = {
     "SPIKE": 6,
     "OPPORTUNITY": 4,
@@ -19,11 +20,14 @@ ALERT_COOLDOWN_HOURS = {
     "STALE": 24,
 }
 
-# Persist cooldown state to disk so Railway restarts don't reset it
 _COOLDOWN_FILE = os.path.join(
     os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__))),
     "cooldowns.json"
 )
+
+
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _load_cooldowns() -> dict:
@@ -31,8 +35,8 @@ def _load_cooldowns() -> dict:
         if os.path.exists(_COOLDOWN_FILE):
             with open(_COOLDOWN_FILE) as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to load cooldowns: {e}")
     return {}
 
 
@@ -49,22 +53,24 @@ def _is_on_cooldown(alert_type: str) -> bool:
     if alert_type not in cooldowns:
         return False
     cooldown_h = ALERT_COOLDOWN_HOURS.get(alert_type, 12)
-    last_sent = datetime.fromisoformat(cooldowns[alert_type])
-    elapsed = (datetime.utcnow() - last_sent).total_seconds() / 3600
+    try:
+        last_sent = datetime.fromisoformat(cooldowns[alert_type])
+    except (ValueError, TypeError):
+        return False
+    elapsed = (_utcnow() - last_sent).total_seconds() / 3600
     return elapsed < cooldown_h
 
 
 def _mark_cooldown(alert_type: str):
     cooldowns = _load_cooldowns()
-    cooldowns[alert_type] = datetime.utcnow().isoformat()
+    cooldowns[alert_type] = _utcnow().isoformat()
     _save_cooldowns(cooldowns)
 
 
 def process_alerts():
-    """Check for alert conditions, generate messages via Claude, queue and deliver."""
+    """Detect alert conditions, generate Claude messages, queue and deliver."""
     alerts = check_spike_alerts()
 
-    # Check BCV staleness
     bcv_health = check_bcv_freshness()
     if bcv_health["stale"]:
         alerts.append({
@@ -75,15 +81,21 @@ def process_alerts():
         })
 
     for alert in alerts:
-        alert_type = alert["alert_type"]  # SPIKE, CRITICAL, etc
+        alert_type = alert["alert_type"]
         if _is_on_cooldown(alert_type):
-            logger.debug(f"Alert {alert_type} is on cooldown, skipping")
+            logger.info(f"Alert {alert_type} on cooldown, skipping")
             continue
 
         try:
             message = build_spike_message(alert)
-            timestamp = datetime.utcnow().isoformat()
-            insert_alert(timestamp, alert_type, message)
+            insert_alert(
+                timestamp=_utcnow().isoformat(),
+                alert_type=alert_type,
+                message=message,
+                bcv_rate=alert.get("bcv_rate"),
+                parallel_rate=alert.get("parallel_rate"),
+                spread_pct=alert.get("spread_pct"),
+            )
             logger.info(f"Alert queued: {alert_type}")
         except Exception as e:
             logger.error(f"Failed to build alert message for {alert_type}: {e}")
@@ -93,21 +105,15 @@ def process_alerts():
 
 def deliver_queued_alerts():
     """Send any undelivered alerts via Telegram."""
-    from db.db import get_connection
     pending = get_undelivered_alerts()
     for alert in pending:
-        # Fetch rate data from the DB row if available
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT r.bcv_rate, r.parallel_rate, r.spread_pct "
-            "FROM rates r ORDER BY r.timestamp DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        bcv = row["bcv_rate"] if row else None
-        parallel = row["parallel_rate"] if row else None
-        spread = row["spread_pct"] if row else None
-
-        success = send_alert(alert["alert_type"], alert["message"], bcv, parallel, spread)
+        success = send_alert(
+            alert_type=alert["alert_type"],
+            message=alert["message"],
+            bcv_rate=alert.get("bcv_rate"),
+            parallel_rate=alert.get("parallel_rate"),
+            spread_pct=alert.get("spread_pct"),
+        )
         if success:
             mark_alert_delivered(alert["id"])
             _mark_cooldown(alert["alert_type"])
