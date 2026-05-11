@@ -144,10 +144,24 @@ def setup_schedule():
     logger.info("  - Weekly report: Mondays 12:00 UTC")
 
 
+def clear_stale_alerts():
+    """On startup, mark any undelivered alerts as delivered so old backlogs don't spam."""
+    from db.db import get_connection
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM alerts WHERE delivered=0").fetchone()[0]
+    if count:
+        conn.execute("UPDATE alerts SET delivered=1 WHERE delivered=0")
+        conn.commit()
+        logger.info(f"Cleared {count} stale undelivered alerts from previous run")
+    conn.close()
+
+
 def main():
     logger.info("Venezuela Currency Agent starting...")
     init_db()
     logger.info("Database initialized")
+
+    clear_stale_alerts()
 
     # Run an immediate scrape on startup
     scrape_and_store()
