@@ -37,6 +37,7 @@ from analysis.analyzer import run_analysis
 from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
 from reports.github_publisher import commit_weekly_report
+from reports.csv_exporter import export_to_github
 
 
 def _utcnow_iso():
@@ -154,15 +155,25 @@ def heartbeat():
     logger.info(f"Heartbeat: data_freshness={h['data_freshness']}, bcv={h['bcv_freshness']}")
 
 
+def run_csv_export():
+    """Export rates and alerts to GitHub as CSV files."""
+    try:
+        export_to_github()
+    except Exception as e:
+        logger.exception(f"CSV export error: {e}")
+
+
 def setup_schedule():
     schedule.every(30).minutes.do(scrape_and_store)
     schedule.every(4).hours.do(run_analysis_job)
     schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
     schedule.every().monday.at("12:00").do(run_weekly_report)
     schedule.every(6).hours.do(heartbeat)
+    schedule.every(1).hours.do(run_csv_export)
 
     logger.info("Schedule:")
     logger.info("  Scrape:        every 30 min")
+    logger.info("  CSV export:    every hour")
     logger.info("  Analysis:      every 4 hours")
     logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
     logger.info("  Weekly report: Mondays 12:00 UTC")
