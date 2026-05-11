@@ -40,7 +40,7 @@ from analysis.analyzer import run_analysis
 from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
 from reports.github_publisher import commit_weekly_report
-from reports.csv_exporter import export_to_github
+from reports.csv_exporter import export_to_github, export_chart_to_github
 from alerts.telegram_poller import poll_for_messages
 
 
@@ -67,6 +67,21 @@ def _derive_urgency(claude_text: str, spread_pct: float | None) -> str:
     if any(kw in text for kw in ["atención", "vigil", "considerar"]):
         return "medium"
     return "low"
+
+
+def _last_data_age_minutes() -> float | None:
+    """Minutes since the most recent rate. None if DB empty."""
+    from db.db import get_latest_rate
+    latest = get_latest_rate()
+    if not latest or not latest.get("timestamp"):
+        return None
+    try:
+        last = datetime.fromisoformat(latest["timestamp"])
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() / 60
+    except (ValueError, TypeError):
+        return None
 
 
 def scrape_and_store():
@@ -192,21 +207,30 @@ def run_db_backup():
         logger.exception(f"DB backup error: {e}")
 
 
+def run_chart_export():
+    try:
+        export_chart_to_github()
+    except Exception as e:
+        logger.exception(f"Chart export error: {e}")
+
+
 def setup_schedule():
     schedule.every(30).minutes.do(scrape_and_store)
     schedule.every(4).hours.do(run_analysis_job)
     schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
     schedule.every().monday.at("12:00").do(run_weekly_report)
     schedule.every().day.at("07:00").do(run_db_backup)  # 03:00 Venezuela — quietest hour
+    schedule.every(2).hours.do(run_chart_export)  # decoupled from scrape — heavy matplotlib work
     schedule.every(6).hours.do(heartbeat)
 
     logger.info("Schedule:")
-    logger.info("  Scrape:        every 30 min (also exports CSVs)")
+    logger.info("  Scrape:        every 30 min (CSVs export inline, chart does NOT)")
     logger.info("  Telegram:      long-poll thread (near-instant queries)")
     logger.info("  Analysis:      every 4 hours")
     logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
     logger.info("  Weekly report: Mondays 12:00 UTC")
     logger.info("  DB backup:     daily 07:00 UTC (03:00 VET)")
+    logger.info("  Chart export:  every 2 hours")
     logger.info("  Heartbeat:     every 6 hours")
 
 
@@ -235,9 +259,11 @@ def clear_stale_alerts():
 
 
 def main():
+    process_start = datetime.now(timezone.utc)
     logger.info("=" * 50)
     logger.info("Venezuela Currency Agent starting")
     logger.info(f"DATA_DIR: {_DATA_DIR}")
+    logger.info(f"Process started: {process_start.isoformat()}")
     logger.info("=" * 50)
 
     init_db()
@@ -247,17 +273,37 @@ def main():
     cds = get_all_cooldowns()
     logger.info(f"Cooldown state at startup: {len(cds)} active — {cds}")
 
+    age = _last_data_age_minutes()
+    if age is not None:
+        logger.info(f"Last data point: {age:.1f} minutes ago (a restart loop would show this <5 min)")
+
     clear_stale_alerts()
-    scrape_and_store()
+
+    age = _last_data_age_minutes()
+    if age is None:
+        logger.info("Startup scrape: DB empty, running initial scrape")
+        scrape_and_store()
+    elif age > 25:
+        logger.info(f"Startup scrape: last data {age:.1f} min old, running catch-up scrape")
+        scrape_and_store()
+    else:
+        logger.info(f"Startup scrape: last data {age:.1f} min old, skipping (scheduler will pick up)")
+
     start_telegram_thread()
     setup_schedule()
     logger.info("Scheduler running. Press Ctrl+C to stop.")
 
+    last_uptime_log = process_start
     while True:
         try:
             schedule.run_pending()
         except Exception as e:
             logger.exception(f"Scheduler error: {e}")
+        now = datetime.now(timezone.utc)
+        if (now - last_uptime_log).total_seconds() >= 600:  # every 10 min
+            uptime_min = (now - process_start).total_seconds() / 60
+            logger.info(f"Alive — uptime {uptime_min:.1f} min")
+            last_uptime_log = now
         time.sleep(30)
 
 

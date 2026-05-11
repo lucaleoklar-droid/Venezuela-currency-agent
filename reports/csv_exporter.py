@@ -228,22 +228,35 @@ def export_to_github() -> bool:
         f"Documentation update {ts}",
     ))
 
-    # 6. Chart PNG (last 30 days)
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp_path = f.name
-        if generate_chart(tmp_path, days=30):
-            with open(tmp_path, "rb") as f:
-                chart_bytes = f.read()
-            success.append(_commit_file(
-                "data/chart.png",
-                chart_bytes,
-                f"Chart update {ts}",
-            ))
-        os.unlink(tmp_path)
-    except Exception as e:
-        logger.error(f"Chart generation failed: {e}")
-
     ok_count = sum(1 for s in success if s)
     logger.info(f"GitHub export: {ok_count}/{len(success)} files committed")
     return ok_count > 0
+
+
+def export_chart_to_github() -> bool:
+    """Generate and commit the rates chart. Heavy (matplotlib) — call from its own
+    schedule, not from every scrape."""
+    if not os.getenv("GITHUB_TOKEN") or not os.getenv("GITHUB_REPO"):
+        return False
+    import gc
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            tmp_path = f.name
+        if not generate_chart(tmp_path, days=30):
+            return False
+        with open(tmp_path, "rb") as f:
+            chart_bytes = f.read()
+        ok = _commit_file("data/chart.png", chart_bytes, f"Chart update {ts}")
+        return ok
+    except Exception as e:
+        logger.error(f"Chart generation failed: {e}")
+        return False
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        gc.collect()
