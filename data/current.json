@@ -1,7 +1,7 @@
 {
-  "timestamp_utc": "2026-05-11T20:04:30.266688",
+  "timestamp_utc": "2026-05-11T20:07:58.595967",
   "bcv_rate": 500.4606,
-  "parallel_rate": 661.9293,
-  "spread_pct": 32.26,
+  "parallel_rate": 662.2475,
+  "spread_pct": 32.33,
   "source": "ve.dolarapi.com"
 }
