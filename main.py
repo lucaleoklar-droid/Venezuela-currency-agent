@@ -38,6 +38,7 @@ from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
 from reports.github_publisher import commit_weekly_report
 from reports.csv_exporter import export_to_github
+from alerts.telegram_poller import poll_for_messages
 
 
 def _utcnow_iso():
@@ -175,9 +176,11 @@ def setup_schedule():
     schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
     schedule.every().monday.at("12:00").do(run_weekly_report)
     schedule.every(6).hours.do(heartbeat)
+    schedule.every(30).seconds.do(poll_for_messages)
 
     logger.info("Schedule:")
     logger.info("  Scrape:        every 30 min (also exports CSVs)")
+    logger.info("  Poll Telegram: every 30 sec (for on-demand queries)")
     logger.info("  Analysis:      every 4 hours")
     logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
     logger.info("  Weekly report: Mondays 12:00 UTC")
