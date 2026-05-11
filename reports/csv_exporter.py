@@ -1,13 +1,16 @@
-"""Exports rate data and alerts as CSV files committed to GitHub."""
+"""Exports rate data in a tiered structure for browsing on GitHub."""
 import os
+import json
 import logging
 import base64
 import csv
 import io
+import tempfile
 import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from db.db import get_connection
+from reports.chart_generator import generate_chart
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -30,98 +33,217 @@ def _get_repo():
     repo = os.getenv("GITHUB_REPO", "")
     if "/" not in repo:
         return None
-    owner, name = repo.split("/", 1)
-    return owner, name
+    return repo.split("/", 1)
 
 
-def _build_rates_csv() -> str:
-    """Build CSV of all rates in the database."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT timestamp, bcv_rate, parallel_rate, spread_pct, source "
-        "FROM rates ORDER BY timestamp DESC"
-    ).fetchall()
-    conn.close()
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["timestamp_utc", "bcv_rate", "parallel_rate", "spread_pct", "source"])
-    for r in rows:
-        writer.writerow([r["timestamp"], r["bcv_rate"], r["parallel_rate"],
-                         r["spread_pct"], r["source"]])
-    return buf.getvalue()
-
-
-def _build_alerts_csv() -> str:
-    """Build CSV of all alerts sent."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT timestamp, alert_type, message, delivered, bcv_rate, parallel_rate, spread_pct "
-        "FROM alerts ORDER BY timestamp DESC"
-    ).fetchall()
-    conn.close()
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["timestamp_utc", "alert_type", "message", "delivered",
-                     "bcv_rate", "parallel_rate", "spread_pct"])
-    for r in rows:
-        writer.writerow([r["timestamp"], r["alert_type"],
-                         (r["message"] or "").replace("\n", " "),
-                         r["delivered"], r["bcv_rate"],
-                         r["parallel_rate"], r["spread_pct"]])
-    return buf.getvalue()
-
-
-def _commit_file(path: str, content: str, message: str) -> bool:
-    """Create or update a file in the GitHub repo."""
+def _commit_file(path: str, content: bytes, message: str) -> bool:
     headers = _headers()
     repo = _get_repo()
     if not headers or not repo:
-        logger.info("GITHUB_TOKEN or GITHUB_REPO not set — skipping CSV export")
         return False
-
     owner, name = repo
-    encoded = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-
+    encoded = base64.b64encode(content).decode("utf-8")
     try:
         url = f"{GITHUB_API}/repos/{owner}/{name}/contents/{path}"
-
-        # Get existing SHA if file exists
         resp = requests.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha") if resp.status_code == 200 else None
-
         payload = {
             "message": message,
             "content": encoded,
-            "committer": {
-                "name": "Venezuela Currency Agent",
-                "email": "agent@venezuela-currency.bot",
-            },
+            "committer": {"name": "Venezuela Currency Agent",
+                          "email": "agent@venezuela-currency.bot"},
         }
         if sha:
             payload["sha"] = sha
-
         resp = requests.put(url, headers=headers, json=payload, timeout=15)
         resp.raise_for_status()
         return True
     except Exception as e:
-        logger.error(f"GitHub CSV commit failed for {path}: {e}")
+        logger.error(f"GitHub commit failed for {path}: {e}")
         return False
+
+
+def _query(sql: str, params: tuple = ()) -> list:
+    conn = get_connection()
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _build_csv(rows: list, columns: list) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(columns)
+    for r in rows:
+        writer.writerow([r.get(c) for c in columns])
+    return buf.getvalue()
+
+
+def _build_recent_csv() -> str:
+    """Last 7 days of raw scrapes (~336 rows max)."""
+    rows = _query(
+        "SELECT timestamp, bcv_rate, parallel_rate, spread_pct, source "
+        "FROM rates "
+        "WHERE timestamp >= datetime('now', '-7 days') "
+        "ORDER BY timestamp DESC"
+    )
+    return _build_csv(rows, ["timestamp", "bcv_rate", "parallel_rate", "spread_pct", "source"])
+
+
+def _build_daily_csv() -> str:
+    """One row per day, summarized (one row added per day, ~365/year)."""
+    rows = _query(
+        "SELECT date(timestamp) as day, "
+        "AVG(bcv_rate) as avg_bcv, AVG(parallel_rate) as avg_parallel, "
+        "AVG(spread_pct) as avg_spread, MIN(spread_pct) as min_spread, MAX(spread_pct) as max_spread, "
+        "COUNT(*) as readings "
+        "FROM rates "
+        "WHERE bcv_rate IS NOT NULL OR parallel_rate IS NOT NULL "
+        "GROUP BY day "
+        "ORDER BY day DESC"
+    )
+    # Round for readability
+    for r in rows:
+        for k in ("avg_bcv", "avg_parallel"):
+            if r.get(k) is not None:
+                r[k] = round(r[k], 2)
+        for k in ("avg_spread", "min_spread", "max_spread"):
+            if r.get(k) is not None:
+                r[k] = round(r[k], 2)
+    return _build_csv(rows, ["day", "avg_bcv", "avg_parallel",
+                              "avg_spread", "min_spread", "max_spread", "readings"])
+
+
+def _build_archive_csv(year_month: str) -> str:
+    """All raw data for a specific YYYY-MM month."""
+    rows = _query(
+        "SELECT timestamp, bcv_rate, parallel_rate, spread_pct, source "
+        "FROM rates "
+        "WHERE strftime('%Y-%m', timestamp) = ? "
+        "ORDER BY timestamp ASC",
+        (year_month,)
+    )
+    return _build_csv(rows, ["timestamp", "bcv_rate", "parallel_rate", "spread_pct", "source"])
+
+
+def _build_current_json() -> str:
+    rows = _query(
+        "SELECT timestamp, bcv_rate, parallel_rate, spread_pct, source "
+        "FROM rates WHERE bcv_rate IS NOT NULL AND parallel_rate IS NOT NULL "
+        "ORDER BY timestamp DESC LIMIT 1"
+    )
+    if not rows:
+        return json.dumps({"error": "no data yet"})
+    r = rows[0]
+    return json.dumps({
+        "timestamp_utc": r["timestamp"],
+        "bcv_rate": r["bcv_rate"],
+        "parallel_rate": r["parallel_rate"],
+        "spread_pct": r["spread_pct"],
+        "source": r["source"],
+    }, indent=2)
+
+
+def _build_readme() -> str:
+    return """# Venezuela Currency Data
+
+This folder is auto-generated by the [Venezuela Currency Agent](../).
+
+## Files
+
+| File | Description | Updated |
+|------|-------------|---------|
+| **chart.png** | Visual chart of last 30 days — rates and spread | Every scrape |
+| **current.json** | Latest reading (machine-readable) | Every scrape |
+| **recent.csv** | Last 7 days of raw 30-min scrapes | Every scrape |
+| **daily.csv** | One row per day (avg/min/max) | Every scrape |
+| **archive/rates-YYYY-MM.csv** | Full raw data, one file per month | Monthly |
+
+## How to read this data
+
+- **Quick visual check** → open `chart.png`
+- **What is the rate right now?** → `current.json`
+- **What happened this week?** → `recent.csv` (sortable in GitHub)
+- **What's the long-term trend?** → `daily.csv`
+- **Deep analysis** → download monthly archive into Excel
+
+## Columns
+
+**rates:**
+- `timestamp` — UTC ISO 8601
+- `bcv_rate` — Official rate from bcv.org.ve
+- `parallel_rate` — Black market rate
+- `spread_pct` — (parallel - bcv) / bcv × 100
+- `source` — which scraper provided the parallel rate
+
+**daily:**
+- `day` — date (UTC)
+- `avg_bcv`, `avg_parallel` — daily averages
+- `avg_spread`, `min_spread`, `max_spread` — spread statistics
+- `readings` — number of scrapes that day
+"""
 
 
 def export_to_github() -> bool:
-    """Export rates and alerts CSVs and commit to GitHub."""
-    if not os.getenv("GITHUB_TOKEN"):
+    """Export data files to GitHub. Returns True if anything was committed."""
+    if not os.getenv("GITHUB_TOKEN") or not os.getenv("GITHUB_REPO"):
         return False
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    rates_csv = _build_rates_csv()
-    alerts_csv = _build_alerts_csv()
+    success = []
 
-    rates_ok = _commit_file("data/rates.csv", rates_csv, f"Data update {ts}")
-    alerts_ok = _commit_file("data/alerts.csv", alerts_csv, f"Data update {ts}")
+    # 1. Current JSON (small, latest reading)
+    success.append(_commit_file(
+        "data/current.json",
+        _build_current_json().encode("utf-8"),
+        f"Data update {ts}",
+    ))
 
-    if rates_ok and alerts_ok:
-        logger.info("CSV export complete: rates.csv + alerts.csv")
-    return rates_ok and alerts_ok
+    # 2. Recent CSV (last 7 days)
+    success.append(_commit_file(
+        "data/recent.csv",
+        _build_recent_csv().encode("utf-8"),
+        f"Data update {ts}",
+    ))
+
+    # 3. Daily summary
+    success.append(_commit_file(
+        "data/daily.csv",
+        _build_daily_csv().encode("utf-8"),
+        f"Data update {ts}",
+    ))
+
+    # 4. Monthly archive (current month)
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    success.append(_commit_file(
+        f"data/archive/rates-{month}.csv",
+        _build_archive_csv(month).encode("utf-8"),
+        f"Data update {ts}",
+    ))
+
+    # 5. README (only commit if not already there — minor optimization)
+    success.append(_commit_file(
+        "data/README.md",
+        _build_readme().encode("utf-8"),
+        f"Documentation update {ts}",
+    ))
+
+    # 6. Chart PNG (last 30 days)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            tmp_path = f.name
+        if generate_chart(tmp_path, days=30):
+            with open(tmp_path, "rb") as f:
+                chart_bytes = f.read()
+            success.append(_commit_file(
+                "data/chart.png",
+                chart_bytes,
+                f"Chart update {ts}",
+            ))
+        os.unlink(tmp_path)
+    except Exception as e:
+        logger.error(f"Chart generation failed: {e}")
+
+    ok_count = sum(1 for s in success if s)
+    logger.info(f"GitHub export: {ok_count}/{len(success)} files committed")
+    return ok_count > 0
