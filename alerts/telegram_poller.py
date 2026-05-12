@@ -95,6 +95,16 @@ def _current_rate_message() -> str:
     parallel = latest.get("parallel_rate")
     spread = latest.get("spread_pct")
 
+    # Extract source's own update time from notes (set during insert)
+    source_updated_at = None
+    notes = (latest.get("notes") or "")
+    if "source_updated_at=" in notes:
+        for tok in notes.split(";"):
+            tok = tok.strip()
+            if tok.startswith("source_updated_at="):
+                source_updated_at = tok.split("=", 1)[1]
+                break
+
     status_emoji = "🟢"
     status_label = "NORMAL"
     if spread is not None and spread > SPREAD_CRITICAL:
@@ -122,6 +132,19 @@ def _current_rate_message() -> str:
         f"Brecha:    <b>{spread:.1f}%</b>  {status_emoji} {status_label}" if spread is not None else "Brecha:    N/A",
         f"24h:       {change_str}",
     ]
+
+    if source_updated_at:
+        try:
+            src_ts = datetime.fromisoformat(source_updated_at.replace("Z", "+00:00"))
+            if src_ts.tzinfo is None:
+                src_ts = src_ts.replace(tzinfo=timezone.utc)
+            hours = (datetime.now(timezone.utc) - src_ts).total_seconds() / 3600
+            if hours > 2:
+                lines.append("")
+                lines.append(f"⚠️ Fuente sin actualizar hace {hours:.1f}h")
+        except (ValueError, TypeError):
+            pass
+
     return "\n".join(lines)
 
 

@@ -61,7 +61,8 @@ def _request_with_retry(url, retries=2, **kwargs):
 
 
 def fetch_dolarapi_ve() -> dict:
-    result = {"rate": None, "timestamp": _now_iso(), "source": "ve.dolarapi.com", "error": None}
+    result = {"rate": None, "timestamp": _now_iso(), "source": "ve.dolarapi.com",
+              "error": None, "source_updated_at": None}
     try:
         resp = _request_with_retry("https://ve.dolarapi.com/v1/dolares")
         data = resp.json()
@@ -73,9 +74,9 @@ def fetch_dolarapi_ve() -> dict:
                     rate = round(float(price), 4)
                     if MIN_RATE < rate < MAX_RATE:
                         result["rate"] = rate
-                        logger.info(f"ve.dolarapi.com parallel: {rate}")
+                        result["source_updated_at"] = item.get("fechaActualizacion")
+                        logger.info(f"ve.dolarapi.com parallel: {rate} (source updated {result['source_updated_at']})")
                         return result
-        # Fallback: first non-BCV item
         for item in data:
             fuente = item.get("fuente", "").lower()
             if "bcv" not in fuente:
@@ -84,6 +85,7 @@ def fetch_dolarapi_ve() -> dict:
                     rate = round(float(price), 4)
                     if MIN_RATE < rate < MAX_RATE:
                         result["rate"] = rate
+                        result["source_updated_at"] = item.get("fechaActualizacion")
                         logger.info(f"ve.dolarapi.com (first non-BCV): {rate}")
                         return result
         result["error"] = "No parallel rate found"

@@ -116,21 +116,31 @@ def scrape_and_store():
         if bcv_rate and parallel_rate and bcv_rate > 0:
             spread_pct = round((parallel_rate - bcv_rate) / bcv_rate * 100, 2)
 
-        notes = []
-        if bcv_result.get("error"):
-            notes.append(f"BCV error: {bcv_result['error']}")
-        if parallel_result.get("error"):
-            notes.append(f"Parallel error: {parallel_result['error']}")
+        # Skip duplicate inserts — if both rates match the last stored row exactly,
+        # the source hasn't published anything new and we'd just pad the data.
+        from db.db import get_latest_rate
+        prev = get_latest_rate()
+        if prev and prev.get("bcv_rate") == bcv_rate and prev.get("parallel_rate") == parallel_rate:
+            logger.info(f"Unchanged from last reading (BCV={bcv_rate}, Parallel={parallel_rate}) — skipping insert")
+        else:
+            notes = []
+            if bcv_result.get("error"):
+                notes.append(f"BCV error: {bcv_result['error']}")
+            if parallel_result.get("error"):
+                notes.append(f"Parallel error: {parallel_result['error']}")
+            src_updated = parallel_result.get("source_updated_at")
+            if src_updated:
+                notes.append(f"source_updated_at={src_updated}")
 
-        insert_rate(
-            timestamp=ts,
-            bcv_rate=bcv_rate,
-            parallel_rate=parallel_rate,
-            spread_pct=spread_pct,
-            source=parallel_result.get("source", "unknown"),
-            notes="; ".join(notes) if notes else None,
-        )
-        logger.info(f"Stored: BCV={bcv_rate}, Parallel={parallel_rate}, Spread={spread_pct}%")
+            insert_rate(
+                timestamp=ts,
+                bcv_rate=bcv_rate,
+                parallel_rate=parallel_rate,
+                spread_pct=spread_pct,
+                source=parallel_result.get("source", "unknown"),
+                notes="; ".join(notes) if notes else None,
+            )
+            logger.info(f"Stored: BCV={bcv_rate}, Parallel={parallel_rate}, Spread={spread_pct}%")
 
     try:
         process_alerts()
