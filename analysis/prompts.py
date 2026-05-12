@@ -33,6 +33,7 @@ Genera el informe diario de cambio para el día de hoy. Datos:
 - Cambio 24h: {change_24h}%
 - Tendencia 7 días: {trend_7d}
 - Comparación con semana pasada: {vs_last_week}
+- Proyección paralelo 24h (regresión 7d): {forecast_24h}
 
 Alertas activas hoy: {active_alerts}
 

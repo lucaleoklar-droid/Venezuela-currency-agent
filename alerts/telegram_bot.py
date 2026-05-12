@@ -10,6 +10,17 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
+# Reply keyboard shown after every brief/alert. Tapping a button sends the
+# button text as a regular message; the poller's _handle_command handles it.
+QUICK_REPLY_KEYBOARD = {
+    "keyboard": [
+        [{"text": "💱 Tasa"}, {"text": "📊 24h"}, {"text": "📅 Semana"}],
+        [{"text": "💰 Precio 50"}, {"text": "🔁 Convertir 100000"}, {"text": "ℹ️ Estado"}],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
 ALERT_HEADERS = {
     "SPIKE":       ("⚡", "MOVIMIENTO BRUSCO"),
     "OPPORTUNITY": ("💰", "OPORTUNIDAD"),
@@ -40,7 +51,7 @@ def _escape(text: str) -> str:
     return html.escape(text, quote=False)
 
 
-def send_message(text: str) -> bool:
+def send_message(text: str, with_keyboard: bool = True) -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -48,18 +59,19 @@ def send_message(text: str) -> bool:
         logger.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
         return False
 
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+               "disable_web_page_preview": True}
+    if with_keyboard:
+        payload["reply_markup"] = QUICK_REPLY_KEYBOARD
+
     try:
         resp = requests.post(
-            TELEGRAM_API.format(token=token),
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True},
-            timeout=10,
+            TELEGRAM_API.format(token=token), json=payload, timeout=10,
         )
         resp.raise_for_status()
         logger.info("Telegram message sent")
         return True
     except requests.RequestException as e:
-        # Log the response body if available for debugging HTML parse failures
         body = getattr(e.response, "text", "") if hasattr(e, "response") else ""
         logger.error(f"Telegram send failed: {e}. Response: {body[:200]}")
         return False

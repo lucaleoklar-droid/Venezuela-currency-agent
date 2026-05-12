@@ -66,6 +66,16 @@ def init_db():
                 last_sent TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS user_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                chat_id TEXT,
+                action TEXT NOT NULL,         -- 'converted' | 'waited'
+                amount_ves REAL,              -- nullable; only set for 'converted'
+                rate_at_action REAL,          -- parallel rate at the time
+                note TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_rates_timestamp ON rates(timestamp);
             CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_date ON daily_analysis(date);
@@ -172,6 +182,25 @@ def upsert_daily_analysis(date_str: str, claude_summary: str, recommendation: st
             "urgency_level=excluded.urgency_level, raw_response=excluded.raw_response",
             (date_str, claude_summary, recommendation, urgency_level, raw_response)
         )
+
+
+def log_user_action(chat_id: str, action: str, amount_ves: float | None,
+                    rate_at_action: float | None, note: str | None = None):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO user_actions (timestamp, chat_id, action, amount_ves, rate_at_action, note) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(), chat_id, action, amount_ves, rate_at_action, note)
+        )
+
+
+def get_user_actions_since(iso_timestamp: str) -> list:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_actions WHERE timestamp >= ? ORDER BY timestamp ASC",
+            (iso_timestamp,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_cooldown(alert_type: str) -> str | None:

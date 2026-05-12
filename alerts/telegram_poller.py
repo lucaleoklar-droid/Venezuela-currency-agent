@@ -3,16 +3,17 @@ Polls Telegram for incoming messages and responds with current data on demand.
 Only responds to chat IDs listed in TELEGRAM_CHAT_ID (comma-separated).
 """
 import os
+import re
 import json
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
-from db.db import get_latest_rate, get_recent_rates
+from db.db import get_latest_rate, get_recent_rates, log_user_action
 from analysis.analyzer import (
     compute_change_pct, get_trend_description, get_rates_last_n_days,
     SPREAD_ELEVATED, SPREAD_CRITICAL,
 )
-from alerts.telegram_bot import _escape, _spanish_date
+from alerts.telegram_bot import _escape, _spanish_date, QUICK_REPLY_KEYBOARD
 
 VET_OFFSET = timedelta(hours=-4)  # Venezuela is UTC-4, no DST
 
@@ -54,30 +55,34 @@ def _send_to_chat(chat_id: str, text: str):
     if not token:
         return
     try:
-        requests.post(
+        resp = requests.post(
             TELEGRAM_API.format(token=token) + "/sendMessage",
             json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-                  "disable_web_page_preview": True},
+                  "disable_web_page_preview": True,
+                  "reply_markup": QUICK_REPLY_KEYBOARD},
             timeout=10,
         )
-    except Exception as e:
-        logger.error(f"Reply send failed: {e}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        body = getattr(e.response, "text", "") if hasattr(e, "response") else ""
+        logger.error(f"Reply send failed: {e}. Response: {body[:200]}")
 
 
 def _help_message() -> str:
     return (
         "<b>Venezuela Divisas — Comandos</b>\n"
         "────────────────\n"
-        "<b>tasa</b> · <b>dolar</b> · <b>cambio</b>\n"
-        "  Tasas actuales y brecha\n\n"
-        "<b>24h</b> · <b>historia</b>\n"
-        "  Resumen últimas 24 horas\n\n"
-        "<b>semana</b>\n"
-        "  Resumen de los últimos 7 días\n\n"
-        "<b>estado</b> · <b>status</b>\n"
-        "  Salud del agente y última actualización\n\n"
-        "<b>ayuda</b> · /help\n"
-        "  Este menú"
+        "<b>tasa</b>  · tasas actuales y brecha\n"
+        "<b>24h</b>   · resumen últimas 24 horas\n"
+        "<b>semana</b> · resumen últimos 7 días\n"
+        "<b>estado</b> · salud del agente\n\n"
+        "<b>precio 50</b>\n"
+        "  Cuántos VES son $50 al paralelo (vs BCV)\n\n"
+        "<b>convertir 100000</b>\n"
+        "  Cuántos USD son 100,000 VES\n\n"
+        "<b>convertí 500000</b> / <b>esperé</b>\n"
+        "  Registra tu decisión (para el resumen mensual)\n\n"
+        "<b>ayuda</b> · este menú"
     )
 
 
@@ -196,18 +201,128 @@ def _status_message() -> str:
     return "\n".join(["<b>Estado del agente</b>", "─" * 16, data_line, bcv_line])
 
 
-def _handle_command(text: str) -> str:
+_AMOUNT_RE = re.compile(r"[\d.,]+")
+
+
+def _parse_amount(text: str) -> float | None:
+    """Pull the first number from text. Accepts 50, 50.5, 50,5, 50000, 50.000, 50,000."""
+    m = _AMOUNT_RE.search(text)
+    if not m:
+        return None
+    raw = m.group(0)
+    # If both . and , present, treat the rightmost as decimal separator
+    if "." in raw and "," in raw:
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raw = raw.replace(",", "")
+    elif "," in raw:
+        # Lone comma: ambiguous. If 3 digits after comma -> thousands; else decimal.
+        after = raw.split(",")[-1]
+        raw = raw.replace(",", "") if len(after) == 3 else raw.replace(",", ".")
+    elif "." in raw:
+        # Lone dot: Spanish thousands separator if last segment is exactly 3 digits
+        # AND there's no other interpretation. "100.000" -> 100000; "50.5" -> 50.5.
+        parts = raw.split(".")
+        if len(parts) >= 2 and all(len(p) == 3 for p in parts[1:]):
+            raw = raw.replace(".", "")
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _fmt_ves(n: float) -> str:
+    return f"{n:,.0f}".replace(",", ".")
+
+
+def _price_in_ves_message(usd_amount: float) -> str:
+    latest = get_latest_rate()
+    if not latest or not latest.get("parallel_rate"):
+        return "Sin datos de tasa todavía."
+    parallel = latest["parallel_rate"]
+    bcv = latest.get("bcv_rate")
+    ves_parallel = usd_amount * parallel
+    lines = [
+        f"<b>Precio en bolívares — ${usd_amount:,.2f} USD</b>",
+        "─" * 16,
+        f"Al paralelo ({parallel:.2f}):  <b>{_fmt_ves(ves_parallel)} VES</b>",
+    ]
+    if bcv:
+        ves_bcv = usd_amount * bcv
+        loss = ves_parallel - ves_bcv
+        loss_pct = (loss / ves_parallel) * 100 if ves_parallel else 0
+        lines.append(f"Al BCV ({bcv:.2f}):       {_fmt_ves(ves_bcv)} VES")
+        lines.append("")
+        lines.append(f"Diferencia: <b>{_fmt_ves(loss)} VES</b> ({loss_pct:.1f}% de margen)")
+        lines.append("Use el paralelo para no perder margen.")
+    return "\n".join(lines)
+
+
+def _convert_to_usd_message(ves_amount: float) -> str:
+    latest = get_latest_rate()
+    if not latest or not latest.get("parallel_rate"):
+        return "Sin datos de tasa todavía."
+    parallel = latest["parallel_rate"]
+    bcv = latest.get("bcv_rate")
+    usd_parallel = ves_amount / parallel
+    lines = [
+        f"<b>Conversión — {_fmt_ves(ves_amount)} VES</b>",
+        "─" * 16,
+        f"Valor real (paralelo {parallel:.2f}):  <b>${usd_parallel:,.2f} USD</b>",
+    ]
+    if bcv:
+        usd_bcv = ves_amount / bcv
+        lines.append(f"Valor oficial (BCV {bcv:.2f}):    ${usd_bcv:,.2f} USD")
+        lines.append("")
+        lines.append("El paralelo refleja el poder de compra real. Use éste para decisiones.")
+    return "\n".join(lines)
+
+
+def _log_action(chat_id: str | None, action: str, amount: float | None) -> str:
+    latest = get_latest_rate()
+    rate = latest.get("parallel_rate") if latest else None
+    log_user_action(chat_id or "", action, amount, rate)
+    if action == "converted":
+        if amount and rate:
+            usd = amount / rate
+            return (f"✅ Registrado: convertiste {_fmt_ves(amount)} VES al paralelo "
+                    f"{rate:.2f} = ${usd:,.2f} USD.")
+        return "✅ Conversión registrada."
+    return "✅ Decisión registrada: esperaste."
+
+
+def _handle_command(text: str, chat_id: str | None = None) -> str:
     t = (text or "").lower().strip()
 
     try:
         if t in ["/start", "/help", "/ayuda", "ayuda", "help"]:
             return _help_message()
+        # Feedback: log dad's actual decision. Match first token only so
+        # "convertir 500" (calculator) doesn't get caught here.
+        first_word = t.split()[0] if t.split() else ""
+        if first_word in {"convertí", "convertido", "converti"}:
+            return _log_action(chat_id, "converted", _parse_amount(t))
+        if first_word in {"esperé", "espere", "esperando"}:
+            return _log_action(chat_id, "waited", None)
         if any(kw in t for kw in ["semana", "7 dias", "7 días", "weekly", "week"]):
             return _week_message()
         if any(kw in t for kw in ["24h", "historia", "history", "ayer"]):
             return _history_24h_message()
         if any(kw in t for kw in ["estado", "status", "salud", "health"]):
             return _status_message()
+        # Pricing: "precio 50" -> how many VES is $50
+        if any(kw in t for kw in ["precio", "price", "$", "usd"]):
+            amount = _parse_amount(t)
+            if amount is None:
+                return "Use: <code>precio 50</code> para calcular cuántos VES son $50."
+            return _price_in_ves_message(amount)
+        # Conversion: "convertir 100000" -> how many USD is 100000 VES
+        if any(kw in t for kw in ["convertir", "convert", "bs", "bolivares", "bolívares", "ves"]):
+            amount = _parse_amount(t)
+            if amount is None:
+                return "Use: <code>convertir 100000</code> para convertir 100,000 VES a USD."
+            return _convert_to_usd_message(amount)
         if any(kw in t for kw in ["tasa", "dolar", "dólar", "cambio", "rate", "/rate"]):
             return _current_rate_message()
         return _help_message()
@@ -253,7 +368,7 @@ def poll_for_messages(long_poll: bool = False):
                 continue
 
             logger.info(f"Query from {user}: {text!r}")
-            response = _handle_command(text)
+            response = _handle_command(text, chat_id=chat_id)
             _send_to_chat(chat_id, response)
 
         if new_offset != offset:

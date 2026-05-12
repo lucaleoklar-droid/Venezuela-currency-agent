@@ -13,6 +13,46 @@ SPREAD_CRITICAL = 45
 SPREAD_EMERGENCY = 65
 
 
+def forecast_parallel_24h() -> dict | None:
+    """Project the parallel rate 24h ahead using linear regression on the last
+    7 days of data. Returns {point: float, low: float, high: float} (95% CI)
+    or None if there isn't enough data."""
+    rates = get_rates_last_n_days(7)
+    points = []
+    for r in rates:
+        if r.get("parallel_rate") is None:
+            continue
+        try:
+            t = datetime.fromisoformat(r["timestamp"])
+        except (ValueError, TypeError):
+            continue
+        points.append((t, r["parallel_rate"]))
+    if len(points) < 12:  # need a reasonable sample
+        return None
+    t0 = points[0][0]
+    xs = [(p[0] - t0).total_seconds() / 3600 for p in points]  # hours from start
+    ys = [p[1] for p in points]
+    n = len(xs)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n))
+    den = sum((xs[i] - mean_x) ** 2 for i in range(n))
+    if den == 0:
+        return None
+    slope = num / den
+    intercept = mean_y - slope * mean_x
+    # Residual std error
+    residuals = [ys[i] - (slope * xs[i] + intercept) for i in range(n)]
+    if n <= 2:
+        return None
+    rmse = (sum(r * r for r in residuals) / (n - 2)) ** 0.5
+    # Project 24h beyond the last observation
+    x_target = xs[-1] + 24
+    point = slope * x_target + intercept
+    margin = 1.96 * rmse
+    return {"point": point, "low": point - margin, "high": point + margin}
+
+
 def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -165,6 +205,20 @@ def check_spike_alerts() -> list[dict]:
     parallel = latest.get("parallel_rate")
     bcv = latest.get("bcv_rate")
     spread = latest.get("spread_pct")
+
+    # Spread velocity: widened >5 percentage points in 24h regardless of level
+    if rates_24h and spread is not None:
+        oldest = rates_24h[-1]  # rates_24h is DESC ordered, last item is oldest
+        old_spread = oldest.get("spread_pct")
+        if old_spread is not None:
+            delta = spread - old_spread
+            if delta > 5:
+                alerts.append({
+                    "type": "spread_widening",
+                    "detail": f"La brecha se amplió {delta:.1f} puntos en 24h ({old_spread:.1f}% → {spread:.1f}%) — posible shock cambiario",
+                    "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
+                    "alert_type": "SPIKE",
+                })
 
     # Rate spike > 6% in 24h
     change_24h = compute_change_pct(rates_24h, 24)

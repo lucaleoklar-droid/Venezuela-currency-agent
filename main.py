@@ -39,6 +39,7 @@ from alerts.alert_rules import process_alerts
 from analysis.analyzer import run_analysis
 from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
+from reports.monthly_report import generate_and_send as send_monthly_report
 from reports.github_publisher import commit_weekly_report
 from reports.csv_exporter import export_to_github, export_chart_to_github
 from alerts.telegram_poller import poll_for_messages
@@ -214,10 +215,23 @@ def run_chart_export():
         logger.exception(f"Chart export error: {e}")
 
 
+def run_monthly_report():
+    # schedule library can't do "1st of month", so we gate inside the daily job
+    today = datetime.now(timezone.utc).day
+    if today != 1:
+        return
+    logger.info("--- Monthly retrospective ---")
+    try:
+        send_monthly_report()
+    except Exception as e:
+        logger.exception(f"Monthly report error: {e}")
+
+
 def setup_schedule():
     schedule.every(30).minutes.do(scrape_and_store)
     schedule.every(4).hours.do(run_analysis_job)
     schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
+    schedule.every().day.at("11:30").do(run_monthly_report)  # fires only on day-of-month=1
     schedule.every().monday.at("12:00").do(run_weekly_report)
     schedule.every().day.at("07:00").do(run_db_backup)  # 03:00 Venezuela — quietest hour
     schedule.every(2).hours.do(run_chart_export)  # decoupled from scrape — heavy matplotlib work

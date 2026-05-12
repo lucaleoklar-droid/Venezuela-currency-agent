@@ -1,7 +1,10 @@
 import logging
 from datetime import datetime
 from db.db import get_latest_rate, get_recent_rates, get_avg_spread, get_undelivered_alerts
-from analysis.analyzer import compute_change_pct, get_trend_description, get_rates_last_n_days
+from analysis.analyzer import (
+    compute_change_pct, get_trend_description, get_rates_last_n_days,
+    forecast_parallel_24h, SPREAD_ELEVATED, SPREAD_CRITICAL,
+)
 from analysis.prompts import DAILY_BRIEF_PROMPT
 from analysis.claude_client import analyze
 from alerts.telegram_bot import send_daily_brief
@@ -12,9 +15,9 @@ logger = logging.getLogger(__name__)
 def get_spread_status(spread_pct: float) -> str:
     if spread_pct is None:
         return "N/A"
-    if spread_pct > 50:
+    if spread_pct > SPREAD_CRITICAL:
         return "CRITICA"
-    elif spread_pct > 35:
+    elif spread_pct > SPREAD_ELEVATED:
         return "ELEVADA"
     else:
         return "NORMAL"
@@ -58,6 +61,13 @@ def generate_and_send():
     pending_alerts = get_undelivered_alerts()
     active_alerts = f"{len(pending_alerts)} alerta(s) pendiente(s)" if pending_alerts else "ninguna"
 
+    forecast = forecast_parallel_24h()
+    if forecast:
+        forecast_str = (f"{forecast['point']:.2f} VES/USD "
+                        f"(rango 95%: {forecast['low']:.2f}–{forecast['high']:.2f})")
+    else:
+        forecast_str = "datos insuficientes para proyección"
+
     prompt = DAILY_BRIEF_PROMPT.format(
         date=datetime.now().strftime("%A %d de %B, %Y"),
         bcv_rate=bcv,
@@ -68,10 +78,11 @@ def generate_and_send():
         trend_7d=trend_7d,
         vs_last_week=vs_last_week,
         active_alerts=active_alerts,
+        forecast_24h=forecast_str,
     )
 
     logger.info("Generating daily brief with Claude...")
-    analysis_text = analyze(prompt, max_tokens=200)
+    analysis_text = analyze(prompt, max_tokens=240)
 
     success = send_daily_brief(
         bcv_rate=bcv,
