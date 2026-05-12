@@ -10,7 +10,11 @@ import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from db.db import get_connection
-from reports.chart_generator import generate_chart
+# NOTE: do NOT import generate_chart here at module level — it imports
+# matplotlib (~100MB RAM). main.py imports this module on startup, so a
+# top-level import would load matplotlib into every Railway restart even
+# though the chart only generates every 2h. Suspected OOM root cause of
+# the restart loop. Import is deferred to inside export_chart_to_github.
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -239,6 +243,7 @@ def export_chart_to_github() -> bool:
     if not os.getenv("GITHUB_TOKEN") or not os.getenv("GITHUB_REPO"):
         return False
     import gc
+    from reports.chart_generator import generate_chart  # deferred — matplotlib is heavy
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     tmp_path = None
     try:

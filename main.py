@@ -4,6 +4,7 @@ Runs continuously; handles all scheduling internally.
 """
 import sys
 import os
+import signal
 import logging
 import schedule
 import threading
@@ -89,9 +90,12 @@ _SCRAPE_TS_FILE = os.path.join(_DATA_DIR, "last_scrape_attempted.txt")
 
 
 def _record_scrape_attempt():
-    """Write current UTC time to a file so restarts know when we last ran."""
+    """Write current UTC time to a file so restarts know when we last ran.
+    fsync so a SIGKILL between write and close doesn't leave the file empty."""
     with open(_SCRAPE_TS_FILE, "w") as f:
         f.write(datetime.now(timezone.utc).isoformat())
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _last_scrape_attempt_minutes() -> float | None:
@@ -306,13 +310,49 @@ def clear_stale_alerts():
     conn.close()
 
 
+def _install_signal_handlers(process_start):
+    """Log when Railway (or anyone) sends a kill signal. Helps diagnose
+    why the bot is being restarted — if we see SIGTERM in the logs,
+    Railway is killing us (OOM, healthcheck, etc.) rather than us crashing."""
+    def _handler(signum, frame):
+        uptime = (datetime.now(timezone.utc) - process_start).total_seconds() / 60
+        name = signal.Signals(signum).name
+        logger.warning(f"!! Received {name} after {uptime:.1f} min uptime — shutting down")
+        # Flush handlers so the message actually lands in Railway logs
+        for h in logging.getLogger().handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+        sys.exit(0)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass  # Not available on this platform / in this thread
+
+
+def _log_memory():
+    """Log RSS at startup so we can correlate restart loops with memory pressure."""
+    try:
+        import resource
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports KB, macOS reports bytes; assume Linux on Railway
+        logger.info(f"Memory at startup: ~{rss_kb / 1024:.0f} MB RSS")
+    except (ImportError, AttributeError):
+        pass
+
+
 def main():
     process_start = datetime.now(timezone.utc)
     logger.info("=" * 50)
     logger.info("Venezuela Currency Agent starting")
     logger.info(f"DATA_DIR: {_DATA_DIR}")
-    logger.info(f"Process started: {process_start.isoformat()}")
+    logger.info(f"Scrape-ts file: {_SCRAPE_TS_FILE}")
+    logger.info(f"Process started: {process_start.isoformat()} (PID {os.getpid()})")
     logger.info("=" * 50)
+    _install_signal_handlers(process_start)
+    _log_memory()
 
     init_db()
     logger.info("Database initialized")
@@ -323,20 +363,18 @@ def main():
 
     attempt_age = _last_scrape_attempt_minutes()
     data_age = _last_data_age_minutes()
-    logger.info(f"Last scrape attempt: {f'{attempt_age:.1f} min ago' if attempt_age is not None else 'never'}")
-    logger.info(f"Last stored reading: {f'{data_age:.1f} min ago' if data_age is not None else 'none'}")
-    if attempt_age is not None and attempt_age < 25:
-        logger.info(f"Startup scrape: last attempt {attempt_age:.1f} min ago (restart loop? skipping)")
-    else:
-        logger.info("Startup scrape: running (no recent attempt found)")
+    logger.info(
+        f"Last scrape attempt: {f'{attempt_age:.1f} min ago' if attempt_age is not None else 'never'} | "
+        f"last stored reading: {f'{data_age:.1f} min ago' if data_age is not None else 'none'}"
+    )
 
     clear_stale_alerts()
 
-    attempt_age = _last_scrape_attempt_minutes()
     if attempt_age is None or attempt_age > 25:
+        logger.info("Startup scrape: running catch-up")
         scrape_and_store()
     else:
-        logger.info(f"Startup scrape skipped — last attempt {attempt_age:.1f} min ago (scheduler will pick up)")
+        logger.info(f"Startup scrape skipped — last attempt {attempt_age:.1f} min ago (restart-loop guard, scheduler will pick up)")
 
     start_telegram_thread()
     setup_schedule()
