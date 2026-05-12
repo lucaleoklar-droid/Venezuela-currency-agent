@@ -85,9 +85,31 @@ def _last_data_age_minutes() -> float | None:
         return None
 
 
+_SCRAPE_TS_FILE = os.path.join(_DATA_DIR, "last_scrape_attempted.txt")
+
+
+def _record_scrape_attempt():
+    """Write current UTC time to a file so restarts know when we last ran."""
+    with open(_SCRAPE_TS_FILE, "w") as f:
+        f.write(datetime.now(timezone.utc).isoformat())
+
+
+def _last_scrape_attempt_minutes() -> float | None:
+    """Minutes since last scrape attempt (from file). None if file missing."""
+    try:
+        with open(_SCRAPE_TS_FILE) as f:
+            last = datetime.fromisoformat(f.read().strip())
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() / 60
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 def scrape_and_store():
     logger.info("--- Scrape cycle ---")
     ts = _utcnow_iso()
+    _record_scrape_attempt()
 
     bcv_result = scrape_bcv()
     parallel_result = get_parallel_rate()
@@ -111,13 +133,12 @@ def scrape_and_store():
             logger.warning(f"BCV rate rejected: {reason}")
             bcv_rate = None
 
+    new_data = False
     if bcv_rate or parallel_rate:
         spread_pct = None
         if bcv_rate and parallel_rate and bcv_rate > 0:
             spread_pct = round((parallel_rate - bcv_rate) / bcv_rate * 100, 2)
 
-        # Skip duplicate inserts — if both rates match the last stored row exactly,
-        # the source hasn't published anything new and we'd just pad the data.
         from db.db import get_latest_rate
         prev = get_latest_rate()
         if prev and prev.get("bcv_rate") == bcv_rate and prev.get("parallel_rate") == parallel_rate:
@@ -141,17 +162,20 @@ def scrape_and_store():
                 notes="; ".join(notes) if notes else None,
             )
             logger.info(f"Stored: BCV={bcv_rate}, Parallel={parallel_rate}, Spread={spread_pct}%")
+            new_data = True
 
     try:
         process_alerts()
     except Exception as e:
         logger.exception(f"Alert processing error: {e}")
 
-    # Update CSVs on GitHub after every scrape so data on GitHub stays fresh
-    try:
-        export_to_github()
-    except Exception as e:
-        logger.exception(f"CSV export error: {e}")
+    if new_data:
+        try:
+            export_to_github()
+        except Exception as e:
+            logger.exception(f"CSV export error: {e}")
+    else:
+        logger.info("No new data — skipping GitHub export")
 
 
 def run_analysis_job():
@@ -297,21 +321,22 @@ def main():
     cds = get_all_cooldowns()
     logger.info(f"Cooldown state at startup: {len(cds)} active — {cds}")
 
-    age = _last_data_age_minutes()
-    if age is not None:
-        logger.info(f"Last data point: {age:.1f} minutes ago (a restart loop would show this <5 min)")
+    attempt_age = _last_scrape_attempt_minutes()
+    data_age = _last_data_age_minutes()
+    logger.info(f"Last scrape attempt: {f'{attempt_age:.1f} min ago' if attempt_age is not None else 'never'}")
+    logger.info(f"Last stored reading: {f'{data_age:.1f} min ago' if data_age is not None else 'none'}")
+    if attempt_age is not None and attempt_age < 25:
+        logger.info(f"Startup scrape: last attempt {attempt_age:.1f} min ago (restart loop? skipping)")
+    else:
+        logger.info("Startup scrape: running (no recent attempt found)")
 
     clear_stale_alerts()
 
-    age = _last_data_age_minutes()
-    if age is None:
-        logger.info("Startup scrape: DB empty, running initial scrape")
-        scrape_and_store()
-    elif age > 25:
-        logger.info(f"Startup scrape: last data {age:.1f} min old, running catch-up scrape")
+    attempt_age = _last_scrape_attempt_minutes()
+    if attempt_age is None or attempt_age > 25:
         scrape_and_store()
     else:
-        logger.info(f"Startup scrape: last data {age:.1f} min old, skipping (scheduler will pick up)")
+        logger.info(f"Startup scrape skipped — last attempt {attempt_age:.1f} min ago (scheduler will pick up)")
 
     start_telegram_thread()
     setup_schedule()
