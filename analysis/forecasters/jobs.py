@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from db.db import get_connection, insert_forecast
 from analysis.forecasters import HORIZON_HOURS
 from analysis.forecasters.naive import NaiveForecaster
+from analysis.forecasters.stat import StatForecaster
 from analysis.forecasters.backtest import score_pending_live
 
 logger = logging.getLogger(__name__)
@@ -32,29 +33,16 @@ def _load_history(lookback_days: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def make_daily_forecast(forecaster=None) -> int | None:
-    """Produce a 24h forecast and persist to the forecasts table.
-    Returns the new forecast id, or None if skipped (insufficient history)."""
-    forecaster = forecaster or NaiveForecaster()
-    history = _load_history(LOOKBACK_DAYS_FOR_FORECAST)
-    if len(history) < MIN_HISTORY_FOR_FORECAST:
-        logger.warning(
-            f"Skipping daily forecast: only {len(history)} historical readings "
-            f"(need ≥{MIN_HISTORY_FOR_FORECAST})"
-        )
+DEFAULT_FORECASTERS = (NaiveForecaster, StatForecaster)
+
+
+def _run_one(forecaster, history: list[dict], made_at: str, target_at: str,
+             spread_at_make: float | None, inputs_meta: dict) -> int | None:
+    try:
+        probs = forecaster.forecast(history)
+    except Exception as e:
+        logger.exception(f"Forecaster {forecaster.name} crashed: {e}")
         return None
-
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    made_at = now.isoformat()
-    target_at = (now + timedelta(hours=HORIZON_HOURS)).isoformat()
-    spread_at_make = history[-1].get("spread_pct")
-
-    probs = forecaster.forecast(history)
-    inputs_meta = {
-        "n_history": len(history),
-        "lookback_days": LOOKBACK_DAYS_FOR_FORECAST,
-        "last_reading_ts": history[-1].get("timestamp"),
-    }
     fid = insert_forecast(
         made_at=made_at,
         target_at=target_at,
@@ -69,10 +57,40 @@ def make_daily_forecast(forecaster=None) -> int | None:
     )
     logger.info(
         f"Forecast #{fid} ({forecaster.name}): "
-        f"widen={probs['widen']:.2%} stable={probs['stable']:.2%} narrow={probs['narrow']:.2%} "
-        f"(spread now: {spread_at_make}, target: {target_at})"
+        f"widen={probs['widen']:.2%} stable={probs['stable']:.2%} narrow={probs['narrow']:.2%}"
     )
     return fid
+
+
+def make_daily_forecast(forecasters=None) -> list[int]:
+    """Produce one 24h forecast per registered forecaster and persist each.
+    Returns the list of new forecast ids (empty if skipped)."""
+    forecasters = forecasters or [cls() for cls in DEFAULT_FORECASTERS]
+    history = _load_history(LOOKBACK_DAYS_FOR_FORECAST)
+    if len(history) < MIN_HISTORY_FOR_FORECAST:
+        logger.warning(
+            f"Skipping daily forecast: only {len(history)} historical readings "
+            f"(need >={MIN_HISTORY_FOR_FORECAST})"
+        )
+        return []
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    made_at = now.isoformat()
+    target_at = (now + timedelta(hours=HORIZON_HOURS)).isoformat()
+    spread_at_make = history[-1].get("spread_pct")
+    inputs_meta = {
+        "n_history": len(history),
+        "lookback_days": LOOKBACK_DAYS_FOR_FORECAST,
+        "last_reading_ts": history[-1].get("timestamp"),
+        "spread_at_make": spread_at_make,
+    }
+    logger.info(f"Daily forecast cycle (spread now: {spread_at_make}, target: {target_at})")
+    ids = []
+    for f in forecasters:
+        fid = _run_one(f, history, made_at, target_at, spread_at_make, inputs_meta)
+        if fid is not None:
+            ids.append(fid)
+    return ids
 
 
 def score_due_forecasts() -> int:
