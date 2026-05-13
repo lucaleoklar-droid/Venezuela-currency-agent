@@ -6,7 +6,13 @@ logger = logging.getLogger(__name__)
 
 BCV_MIN, BCV_MAX = 1, 100_000
 PARALLEL_MIN, PARALLEL_MAX = 1, 200_000
-MAX_REL_CHANGE = 0.50  # ±50% vs last known good
+# Two thresholds, not one:
+#  >SUSPECT_REL_CHANGE: accept but flag in notes — could be real hyperinflation
+#  >HARD_REL_CHANGE:    reject — likely a scraper glitch (decimal slip, parsing bug)
+# Historical Venezuelan single-day moves topped ~70% during 2018 crash, so 50%
+# is too tight to reject silently — exactly the events the bot exists to flag.
+SUSPECT_REL_CHANGE = 0.50
+HARD_REL_CHANGE = 2.00
 BCV_OVER_PARALLEL_TOL = 0.05  # BCV may not exceed parallel by >5%
 
 
@@ -35,14 +41,18 @@ def validate_rate(new_rate: float, source: str, rate_type: str) -> tuple[bool, s
 
     latest = get_latest_rate()
 
+    suspect_reason = None
     if latest:
         prev = latest.get(f"{rate_type}_rate")
         if prev and prev > 0:
             change = abs(new_rate - prev) / prev
-            if change > MAX_REL_CHANGE:
-                reason = f"±{int(MAX_REL_CHANGE*100)}% deviation from last {prev}: {new_rate} ({change*100:.1f}%)"
+            if change > HARD_REL_CHANGE:
+                reason = f"hard cap ±{int(HARD_REL_CHANGE*100)}%: {prev} -> {new_rate} ({change*100:.1f}%)"
                 logger.warning("reject %s/%s: %s", source, rate_type, reason)
                 return False, reason
+            if change > SUSPECT_REL_CHANGE:
+                suspect_reason = f"suspect_extreme_move: {prev} -> {new_rate} ({change*100:.1f}%)"
+                logger.warning("ACCEPT-WITH-FLAG %s/%s: %s", source, rate_type, suspect_reason)
 
     if rate_type == "bcv" and latest:
         parallel = latest.get("parallel_rate")
@@ -51,6 +61,8 @@ def validate_rate(new_rate: float, source: str, rate_type: str) -> tuple[bool, s
             logger.warning("reject %s/%s: %s", source, rate_type, reason)
             return False, reason
 
+    if suspect_reason:
+        return True, suspect_reason
     logger.info("accept %s/%s: %s", source, rate_type, new_rate)
     return True, None
 
@@ -65,7 +77,8 @@ if __name__ == "__main__":
         ("zero", 0, "x", "parallel", None, False),
         ("negative", -5.0, "x", "parallel", None, False),
         ("NaN", float("nan"), "x", "parallel", None, False),
-        ("far outside last known", 5000.0, "x", "parallel", {"bcv_rate": 500.0, "parallel_rate": 650.0}, False),
+        ("hard-cap reject", 5000.0, "x", "parallel", {"bcv_rate": 500.0, "parallel_rate": 650.0}, False),
+        ("suspect but accepted", 1100.0, "x", "parallel", {"bcv_rate": 500.0, "parallel_rate": 650.0}, True),
         ("BCV > parallel + 5%", 720.0, "bcv.org.ve", "bcv", {"bcv_rate": 700.0, "parallel_rate": 650.0}, False),
     ]
 

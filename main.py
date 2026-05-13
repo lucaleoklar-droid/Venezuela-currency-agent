@@ -9,7 +9,7 @@ import logging
 import schedule
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -36,7 +36,7 @@ from db.backup import backup_database_to_github
 from scrapers.bcv_scraper import scrape_bcv
 from scrapers.parallel_scraper import get_parallel_rate
 from scrapers.sanity_check import validate_rate
-from alerts.alert_rules import process_alerts
+from alerts.alert_rules import process_alerts, deliver_queued_alerts
 from analysis.analyzer import run_analysis
 from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
@@ -44,6 +44,7 @@ from reports.monthly_report import generate_and_send as send_monthly_report
 from reports.github_publisher import commit_weekly_report
 from reports.csv_exporter import export_to_github, export_chart_to_github
 from alerts.telegram_poller import poll_for_messages
+from analysis.forecasters.jobs import make_daily_forecast, score_due_forecasts
 
 
 def _utcnow_iso():
@@ -126,16 +127,21 @@ def scrape_and_store():
     if not parallel_rate:
         logger.warning(f"Parallel scrape failed: {parallel_result.get('error')}")
 
+    sanity_flags = []
     if parallel_rate is not None:
         ok, reason = validate_rate(parallel_rate, parallel_result.get("source", "unknown"), "parallel")
         if not ok:
             logger.warning(f"Parallel rate rejected: {reason}")
             parallel_rate = None
+        elif reason:
+            sanity_flags.append(f"parallel {reason}")
     if bcv_rate is not None:
         ok, reason = validate_rate(bcv_rate, "bcv.org.ve", "bcv")
         if not ok:
             logger.warning(f"BCV rate rejected: {reason}")
             bcv_rate = None
+        elif reason:
+            sanity_flags.append(f"bcv {reason}")
 
     new_data = False
     if bcv_rate or parallel_rate:
@@ -156,6 +162,7 @@ def scrape_and_store():
             src_updated = parallel_result.get("source_updated_at")
             if src_updated:
                 notes.append(f"source_updated_at={src_updated}")
+            notes.extend(sanity_flags)
 
             insert_rate(
                 timestamp=ts,
@@ -253,6 +260,20 @@ def run_chart_export():
         logger.exception(f"Chart export error: {e}")
 
 
+def run_daily_forecast():
+    try:
+        make_daily_forecast()
+    except Exception as e:
+        logger.exception(f"Daily forecast error: {e}")
+
+
+def run_score_forecasts():
+    try:
+        score_due_forecasts()
+    except Exception as e:
+        logger.exception(f"Forecast scoring error: {e}")
+
+
 def run_monthly_report():
     # schedule library can't do "1st of month", so we gate inside the daily job
     today = datetime.now(timezone.utc).day
@@ -274,6 +295,8 @@ def setup_schedule():
     schedule.every().day.at("07:00").do(run_db_backup)  # 03:00 Venezuela — quietest hour
     schedule.every(2).hours.do(run_chart_export)  # decoupled from scrape — heavy matplotlib work
     schedule.every(6).hours.do(heartbeat)
+    schedule.every().day.at("10:55").do(run_daily_forecast)  # ~5min before daily brief
+    schedule.every().hour.do(run_score_forecasts)  # mature any 24h-old forecasts
 
     logger.info("Schedule:")
     logger.info("  Scrape:        every 30 min (CSVs export inline, chart does NOT)")
@@ -284,6 +307,8 @@ def setup_schedule():
     logger.info("  DB backup:     daily 07:00 UTC (03:00 VET)")
     logger.info("  Chart export:  every 2 hours")
     logger.info("  Heartbeat:     every 6 hours")
+    logger.info("  Forecast:      daily 10:55 UTC (naive baseline, 24h horizon)")
+    logger.info("  Forecast score: every hour (matures past forecasts)")
 
 
 def start_telegram_thread():
@@ -300,14 +325,24 @@ def start_telegram_thread():
 
 
 def clear_stale_alerts():
-    """On startup, mark any undelivered alerts as delivered so old backlogs don't spam."""
+    """On startup, drop only *old* undelivered alerts (no backlog spam).
+    Fresh undelivered alerts are left for deliver_queued_alerts() to attempt."""
+    from alerts.alert_rules import STALE_ALERT_MAX_AGE_MIN
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(minutes=STALE_ALERT_MAX_AGE_MIN)).isoformat()
     conn = get_connection()
-    count = conn.execute("SELECT COUNT(*) FROM alerts WHERE delivered=0").fetchone()[0]
-    if count:
-        conn.execute("UPDATE alerts SET delivered=1 WHERE delivered=0")
-        conn.commit()
-        logger.info(f"Cleared {count} stale undelivered alerts from previous run")
+    cur = conn.execute(
+        "UPDATE alerts SET delivered=1 WHERE delivered=0 AND timestamp < ?",
+        (cutoff,),
+    )
+    dropped = cur.rowcount
+    remaining = conn.execute("SELECT COUNT(*) FROM alerts WHERE delivered=0").fetchone()[0]
+    conn.commit()
     conn.close()
+    if dropped:
+        logger.info(f"Dropped {dropped} stale undelivered alerts from previous run")
+    if remaining:
+        logger.info(f"{remaining} fresh undelivered alerts will be retried")
 
 
 def _install_signal_handlers(process_start):
@@ -330,6 +365,30 @@ def _install_signal_handlers(process_start):
             signal.signal(sig, _handler)
         except (ValueError, OSError):
             pass  # Not available on this platform / in this thread
+
+
+def _cleanup_legacy_files():
+    """One-time cleanup of pre-SQLite-cooldown state files on the volume.
+    Migrates any cooldowns.json entries into the alert_cooldowns table, then
+    deletes the file. telegram_offset.json is left in place — still in use."""
+    legacy_path = os.path.join(_DATA_DIR, "cooldowns.json")
+    if not os.path.exists(legacy_path):
+        return
+    try:
+        import json
+        from db.db import set_cooldown
+        with open(legacy_path) as f:
+            data = json.load(f)
+        migrated = 0
+        if isinstance(data, dict):
+            for alert_type, last_sent in data.items():
+                if isinstance(last_sent, str):
+                    set_cooldown(alert_type, last_sent)
+                    migrated += 1
+        os.unlink(legacy_path)
+        logger.info(f"Legacy cooldowns.json: migrated {migrated} entries, file removed")
+    except Exception as e:
+        logger.warning(f"Legacy cooldowns.json cleanup failed: {e}")
 
 
 def _log_memory():
@@ -356,6 +415,7 @@ def main():
 
     init_db()
     logger.info("Database initialized")
+    _cleanup_legacy_files()
 
     from db.db import get_all_cooldowns
     cds = get_all_cooldowns()
@@ -375,6 +435,11 @@ def main():
         scrape_and_store()
     else:
         logger.info(f"Startup scrape skipped — last attempt {attempt_age:.1f} min ago (restart-loop guard, scheduler will pick up)")
+        # Still flush any queued alerts the prior process may not have delivered
+        try:
+            deliver_queued_alerts()
+        except Exception as e:
+            logger.exception(f"Startup alert flush error: {e}")
 
     start_telegram_thread()
     setup_schedule()

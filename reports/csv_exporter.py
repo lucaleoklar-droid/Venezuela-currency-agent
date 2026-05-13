@@ -2,14 +2,13 @@
 import os
 import json
 import logging
-import base64
 import csv
 import io
 import tempfile
-import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from db.db import get_connection
+from reports.github_publisher import commit_file as _commit_file
 # NOTE: do NOT import generate_chart here at module level — it imports
 # matplotlib (~100MB RAM). main.py imports this module on startup, so a
 # top-level import would load matplotlib into every Railway restart even
@@ -18,54 +17,6 @@ from db.db import get_connection
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-GITHUB_API = "https://api.github.com"
-
-
-def _headers():
-    token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        return None
-    return {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-def _get_repo():
-    repo = os.getenv("GITHUB_REPO", "")
-    if "/" not in repo:
-        return None
-    return repo.split("/", 1)
-
-
-def _commit_file(path: str, content: bytes, message: str) -> bool:
-    headers = _headers()
-    repo = _get_repo()
-    if not headers or not repo:
-        return False
-    owner, name = repo
-    encoded = base64.b64encode(content).decode("utf-8")
-    try:
-        url = f"{GITHUB_API}/repos/{owner}/{name}/contents/{path}"
-        resp = requests.get(url, headers=headers, timeout=10)
-        sha = resp.json().get("sha") if resp.status_code == 200 else None
-        payload = {
-            "message": message,
-            "content": encoded,
-            "committer": {"name": "Venezuela Currency Agent",
-                          "email": "agent@venezuela-currency.bot"},
-        }
-        if sha:
-            payload["sha"] = sha
-        resp = requests.put(url, headers=headers, json=payload, timeout=15)
-        resp.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"GitHub commit failed for {path}: {e}")
-        return False
-
 
 def _query(sql: str, params: tuple = ()) -> list:
     conn = get_connection()

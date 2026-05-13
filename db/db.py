@@ -66,6 +66,46 @@ def init_db():
                 last_sent TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS forecasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                made_at TEXT NOT NULL,           -- UTC ISO when forecast was produced
+                target_at TEXT NOT NULL,         -- made_at + horizon_hours
+                horizon_hours INTEGER NOT NULL,
+                model_name TEXT NOT NULL,        -- 'naive', 'stat', 'claude', etc
+                p_widen REAL NOT NULL,
+                p_stable REAL NOT NULL,
+                p_narrow REAL NOT NULL,
+                spread_at_make REAL,             -- spread at made_at (so scoring knows the baseline)
+                inputs_json TEXT,                -- raw feature snapshot
+                raw_output TEXT                  -- whatever the model emitted
+            );
+
+            CREATE TABLE IF NOT EXISTS forecast_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                forecast_id INTEGER NOT NULL UNIQUE,
+                scored_at TEXT NOT NULL,
+                spread_at_target REAL,           -- actual spread at target_at (or nearest reading)
+                delta_pp REAL,                   -- spread_at_target - spread_at_make
+                actual_outcome TEXT NOT NULL,    -- 'widen' | 'stable' | 'narrow'
+                brier REAL NOT NULL,             -- Brier score (multiclass)
+                log_loss REAL,                   -- optional, NULL if any prob is 0
+                FOREIGN KEY (forecast_id) REFERENCES forecasts(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_forecasts_target ON forecasts(target_at);
+            CREATE INDEX IF NOT EXISTS idx_forecasts_model ON forecasts(model_name);
+
+            CREATE TABLE IF NOT EXISTS daily_brief_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL UNIQUE,
+                action_signal TEXT NOT NULL,  -- CONVERTIR | ESPERAR | NEUTRAL
+                brief_text TEXT,
+                bcv_rate REAL,
+                parallel_rate REAL,
+                spread_pct REAL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS user_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
@@ -181,6 +221,85 @@ def upsert_daily_analysis(date_str: str, claude_summary: str, recommendation: st
             "claude_summary=excluded.claude_summary, recommendation=excluded.recommendation, "
             "urgency_level=excluded.urgency_level, raw_response=excluded.raw_response",
             (date_str, claude_summary, recommendation, urgency_level, raw_response)
+        )
+
+
+def insert_forecast(made_at: str, target_at: str, horizon_hours: int, model_name: str,
+                    p_widen: float, p_stable: float, p_narrow: float,
+                    spread_at_make: float | None, inputs_json: str | None,
+                    raw_output: str | None) -> int:
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO forecasts (made_at, target_at, horizon_hours, model_name, "
+            "p_widen, p_stable, p_narrow, spread_at_make, inputs_json, raw_output) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (made_at, target_at, horizon_hours, model_name,
+             p_widen, p_stable, p_narrow, spread_at_make, inputs_json, raw_output)
+        )
+        return cur.lastrowid
+
+
+def insert_forecast_score(forecast_id: int, scored_at: str, spread_at_target: float | None,
+                          delta_pp: float | None, actual_outcome: str,
+                          brier: float, log_loss: float | None):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO forecast_scores "
+            "(forecast_id, scored_at, spread_at_target, delta_pp, actual_outcome, brier, log_loss) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (forecast_id, scored_at, spread_at_target, delta_pp, actual_outcome, brier, log_loss)
+        )
+
+
+def get_unscored_matured_forecasts(now_iso: str) -> list[dict]:
+    """Forecasts whose target_at has passed but have no score yet."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT f.* FROM forecasts f "
+            "LEFT JOIN forecast_scores s ON s.forecast_id = f.id "
+            "WHERE s.id IS NULL AND f.target_at <= ? "
+            "ORDER BY f.target_at ASC",
+            (now_iso,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_forecast_brier_summary(model_name: str | None = None) -> dict:
+    """Aggregate Brier stats. Pass model_name to filter to one model."""
+    with db() as conn:
+        if model_name:
+            row = conn.execute(
+                "SELECT COUNT(*) as n, AVG(brier) as mean_brier, "
+                "AVG(log_loss) as mean_log_loss "
+                "FROM forecast_scores s JOIN forecasts f ON f.id = s.forecast_id "
+                "WHERE f.model_name = ?",
+                (model_name,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT f.model_name, COUNT(*) as n, AVG(s.brier) as mean_brier, "
+                "AVG(s.log_loss) as mean_log_loss "
+                "FROM forecast_scores s JOIN forecasts f ON f.id = s.forecast_id "
+                "GROUP BY f.model_name"
+            ).fetchall()
+            return [dict(r) for r in row]
+    return dict(row) if row else {}
+
+
+def upsert_daily_brief_action(date_str: str, action_signal: str, brief_text: str,
+                              bcv_rate: float | None, parallel_rate: float | None,
+                              spread_pct: float | None):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO daily_brief_actions "
+            "(date, action_signal, brief_text, bcv_rate, parallel_rate, spread_pct, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(date) DO UPDATE SET "
+            "action_signal=excluded.action_signal, brief_text=excluded.brief_text, "
+            "bcv_rate=excluded.bcv_rate, parallel_rate=excluded.parallel_rate, "
+            "spread_pct=excluded.spread_pct, created_at=excluded.created_at",
+            (date_str, action_signal, brief_text, bcv_rate, parallel_rate, spread_pct,
+             datetime.now().isoformat())
         )
 
 

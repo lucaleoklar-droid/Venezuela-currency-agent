@@ -1,6 +1,8 @@
 import logging
+import re
 from datetime import datetime
-from db.db import get_latest_rate, get_recent_rates, get_avg_spread, get_undelivered_alerts
+from db.db import (get_latest_rate, get_recent_rates, get_avg_spread,
+                   get_undelivered_alerts, upsert_daily_brief_action)
 from analysis.analyzer import (
     compute_change_pct, get_trend_description, get_rates_last_n_days,
     forecast_parallel_24h, SPREAD_ELEVATED, SPREAD_CRITICAL,
@@ -10,6 +12,39 @@ from analysis.claude_client import analyze
 from alerts.telegram_bot import send_daily_brief
 
 logger = logging.getLogger(__name__)
+
+
+_VALID_ACTIONS = ("CONVERTIR", "ESPERAR", "NEUTRAL")
+_ACTION_RE = re.compile(
+    r"^[\s*_`#>-]*acci[oó]n\s*[:\-]\s*\**\s*(convertir|esperar|neutral)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_and_enforce_action(text: str) -> tuple[str, str]:
+    """Extract the Acción signal from Claude's output. If the model disobeyed
+    the prompt (missing prefix, leading sentence, wrong word), default to
+    NEUTRAL and prepend the canonical prefix.
+    Returns (action_signal, normalized_brief_text)."""
+    if not text:
+        return "NEUTRAL", "Acción: NEUTRAL\n(sin contenido del modelo)"
+    stripped = text.strip()
+    first_line = stripped.split("\n", 1)[0]
+    m = _ACTION_RE.match(first_line)
+    if m:
+        action = m.group(1).upper()
+        # Normalize the first line to canonical form
+        rest = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+        normalized = f"Acción: {action}" + (f"\n{rest}" if rest else "")
+        return action, normalized
+    # Search anywhere in the text as a fallback before defaulting
+    for line in stripped.splitlines():
+        m = _ACTION_RE.match(line.strip())
+        if m:
+            action = m.group(1).upper()
+            return action, f"Acción: {action}\n{stripped}"
+    logger.warning("Daily brief missing Acción prefix — defaulting to NEUTRAL")
+    return "NEUTRAL", f"Acción: NEUTRAL\n{stripped}"
 
 
 def get_spread_status(spread_pct: float) -> str:
@@ -82,7 +117,22 @@ def generate_and_send():
     )
 
     logger.info("Generating daily brief with Claude...")
-    analysis_text = analyze(prompt, max_tokens=240)
+    raw_text = analyze(prompt, max_tokens=240)
+    action_signal, analysis_text = parse_and_enforce_action(raw_text)
+    logger.info(f"Daily brief action signal: {action_signal}")
+
+    today_iso = datetime.now().date().isoformat()
+    try:
+        upsert_daily_brief_action(
+            date_str=today_iso,
+            action_signal=action_signal,
+            brief_text=analysis_text,
+            bcv_rate=bcv,
+            parallel_rate=parallel,
+            spread_pct=spread,
+        )
+    except Exception as e:
+        logger.exception(f"Failed to store daily brief action: {e}")
 
     success = send_daily_brief(
         bcv_rate=bcv,

@@ -5,7 +5,7 @@ import tempfile
 import logging
 from datetime import datetime, timezone
 from db.db import DB_PATH
-from reports.csv_exporter import _commit_file
+from reports.github_publisher import commit_file
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def backup_database_to_github() -> bool:
             blob = f.read()
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        ok = _commit_file(
+        ok = commit_file(
             "backups/venezuela_currency.db",
             blob,
             f"DB backup {ts}",

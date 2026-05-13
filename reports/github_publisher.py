@@ -30,6 +30,35 @@ def _get_repo() -> tuple[str, str]:
     return owner, name
 
 
+def commit_file(path: str, content: bytes, message: str) -> bool:
+    """Create/update a file in the configured GitHub repo. Public helper
+    shared by csv_exporter and db/backup."""
+    try:
+        owner, repo = _get_repo()
+    except ValueError as e:
+        logger.error(f"GitHub commit skipped: {e}")
+        return False
+    encoded = base64.b64encode(content).decode("utf-8")
+    try:
+        url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
+        resp = requests.get(url, headers=_headers(), timeout=10)
+        sha = resp.json().get("sha") if resp.status_code == 200 else None
+        payload = {
+            "message": message,
+            "content": encoded,
+            "committer": {"name": "Venezuela Currency Agent",
+                          "email": "agent@venezuela-currency.bot"},
+        }
+        if sha:
+            payload["sha"] = sha
+        resp = requests.put(url, headers=_headers(), json=payload, timeout=15)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"GitHub commit failed for {path}: {e}")
+        return False
+
+
 def commit_weekly_report(report_content: str) -> bool:
     try:
         owner, repo = _get_repo()
