@@ -283,6 +283,30 @@ def run_brent_fetch():
         logger.exception(f"Brent fetch error: {e}")
 
 
+def maybe_backfill_brent():
+    """One-shot bootstrap: if oil_prices is empty, backfill full history from
+    FRED. Self-healing — runs at most once per fresh DB. Subsequent restarts
+    skip this in O(1)."""
+    conn = get_connection()
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM oil_prices").fetchone()[0]
+    except Exception as e:
+        logger.warning(f"oil_prices count failed (table may not exist yet): {e}")
+        return
+    finally:
+        conn.close()
+    if n > 0:
+        logger.info(f"oil_prices has {n} rows — skipping bootstrap backfill")
+        return
+    logger.info("oil_prices empty — running one-time Brent backfill from FRED")
+    try:
+        from scrapers.oil_fetcher import backfill
+        result = backfill(start_date="2024-01-01")
+        logger.info(f"Brent backfill result: {result}")
+    except Exception as e:
+        logger.exception(f"Brent backfill failed (forecasters will degrade to uniform until Brent populates): {e}")
+
+
 def run_news_scan():
     try:
         scan_news_feeds()
@@ -436,6 +460,7 @@ def main():
     init_db()
     logger.info("Database initialized")
     _cleanup_legacy_files()
+    maybe_backfill_brent()
 
     from db.db import get_all_cooldowns
     cds = get_all_cooldowns()
