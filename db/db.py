@@ -116,9 +116,29 @@ def init_db():
                 note TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS oil_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation_date TEXT NOT NULL UNIQUE,   -- ISO date YYYY-MM-DD (source-defined)
+                brent_usd_per_bbl REAL NOT NULL,
+                source TEXT NOT NULL,                    -- e.g. 'fred:DCOILBRENTEU'
+                fetched_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS news_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                published_at TEXT NOT NULL,              -- article publication time (ISO)
+                source TEXT NOT NULL,                    -- 'efectococuyo' | 'bancaynegocios' | 'talcualdigital'
+                url TEXT NOT NULL UNIQUE,                -- dedup key
+                title TEXT NOT NULL,
+                matched_keywords TEXT NOT NULL,          -- JSON list of which keywords matched
+                fetched_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_rates_timestamp ON rates(timestamp);
             CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_date ON daily_analysis(date);
+            CREATE INDEX IF NOT EXISTS idx_oil_date ON oil_prices(observation_date);
+            CREATE INDEX IF NOT EXISTS idx_news_published ON news_signals(published_at);
         """)
 
         # Migrations for legacy databases — add columns that may be missing
@@ -344,6 +364,68 @@ def get_all_cooldowns() -> dict:
     with db() as conn:
         rows = conn.execute("SELECT alert_type, last_sent FROM alert_cooldowns").fetchall()
     return {r["alert_type"]: r["last_sent"] for r in rows}
+
+
+def upsert_oil_price(observation_date: str, brent_usd_per_bbl: float,
+                     source: str, fetched_at: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO oil_prices (observation_date, brent_usd_per_bbl, source, fetched_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(observation_date) DO UPDATE SET "
+            "brent_usd_per_bbl=excluded.brent_usd_per_bbl, "
+            "source=excluded.source, fetched_at=excluded.fetched_at",
+            (observation_date, brent_usd_per_bbl, source, fetched_at)
+        )
+
+
+def get_latest_oil_price() -> dict | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT observation_date, brent_usd_per_bbl, source, fetched_at "
+            "FROM oil_prices ORDER BY observation_date DESC LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_oil_price_on_or_before(target_date: str) -> dict | None:
+    """Most recent oil reading whose observation_date <= target_date.
+    target_date is an ISO YYYY-MM-DD string. Returns None if none available."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT observation_date, brent_usd_per_bbl "
+            "FROM oil_prices WHERE observation_date <= ? "
+            "ORDER BY observation_date DESC LIMIT 1",
+            (target_date,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_news_signal(published_at: str, source: str, url: str, title: str,
+                       matched_keywords_json: str, fetched_at: str) -> bool:
+    """Insert a news signal. Returns True if inserted, False if URL already known."""
+    with db() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO news_signals "
+                "(published_at, source, url, title, matched_keywords, fetched_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (published_at, source, url, title, matched_keywords_json, fetched_at)
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def get_news_count_between(start_iso: str, end_iso: str) -> int:
+    """Count of news signals with published_at in [start_iso, end_iso)."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as n FROM news_signals "
+            "WHERE published_at >= ? AND published_at < ?",
+            (start_iso, end_iso)
+        ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 def get_weekly_data():

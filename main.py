@@ -45,6 +45,8 @@ from reports.github_publisher import commit_weekly_report
 from reports.csv_exporter import export_to_github, export_chart_to_github
 from alerts.telegram_poller import poll_for_messages
 from analysis.forecasters.jobs import make_daily_forecast, score_due_forecasts
+from scrapers.oil_fetcher import fetch_recent as fetch_brent_recent
+from scrapers.news_scanner import scan_feeds as scan_news_feeds
 
 
 def _utcnow_iso():
@@ -274,6 +276,20 @@ def run_score_forecasts():
         logger.exception(f"Forecast scoring error: {e}")
 
 
+def run_brent_fetch():
+    try:
+        fetch_brent_recent()
+    except Exception as e:
+        logger.exception(f"Brent fetch error: {e}")
+
+
+def run_news_scan():
+    try:
+        scan_news_feeds()
+    except Exception as e:
+        logger.exception(f"News scan error: {e}")
+
+
 def run_monthly_report():
     # schedule library can't do "1st of month", so we gate inside the daily job
     today = datetime.now(timezone.utc).day
@@ -295,6 +311,8 @@ def setup_schedule():
     schedule.every().day.at("07:00").do(run_db_backup)  # 03:00 Venezuela — quietest hour
     schedule.every(2).hours.do(run_chart_export)  # decoupled from scrape — heavy matplotlib work
     schedule.every(6).hours.do(heartbeat)
+    schedule.every().day.at("10:30").do(run_brent_fetch)  # 25 min before forecast
+    schedule.every(3).hours.do(run_news_scan)  # Stage 3 news signal
     schedule.every().day.at("10:55").do(run_daily_forecast)  # ~5min before daily brief
     schedule.every().hour.do(run_score_forecasts)  # mature any 24h-old forecasts
 
@@ -307,7 +325,9 @@ def setup_schedule():
     logger.info("  DB backup:     daily 07:00 UTC (03:00 VET)")
     logger.info("  Chart export:  every 2 hours")
     logger.info("  Heartbeat:     every 6 hours")
-    logger.info("  Forecast:      daily 10:55 UTC (naive baseline, 24h horizon)")
+    logger.info("  Brent fetch:   daily 10:30 UTC (FRED DCOILBRENTEU)")
+    logger.info("  News scan:     every 3 hours (FX intervention keywords)")
+    logger.info("  Forecast:      daily 10:55 UTC (naive + stat + stat_v2 + stat_v3, 24h horizon)")
     logger.info("  Forecast score: every hour (matures past forecasts)")
 
 

@@ -45,6 +45,8 @@ def _parse_ts(s: str) -> datetime:
 
 
 def _load_rates(db_path: str) -> list[dict]:
+    from analysis.forecasters.enrich import enrich_history
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -53,9 +55,12 @@ def _load_rates(db_path: str) -> list[dict]:
             "FROM rates WHERE bcv_rate IS NOT NULL AND parallel_rate IS NOT NULL "
             "ORDER BY timestamp ASC"
         ).fetchall()
+        history = [dict(r) for r in rows]
+        # Enrich with oil + news so Stage 3 forecasters get their features.
+        # Stage 1/2 forecasters ignore the extra keys — harmless overhead for them.
+        return enrich_history(history, conn=conn)
     finally:
         conn.close()
-    return [dict(r) for r in rows]
 
 
 def _find_nearest(rates: list[dict], target_dt: datetime,
@@ -298,6 +303,7 @@ def _print_summary(summary: dict) -> None:
 
 
 if __name__ == "__main__":
+    import argparse
     import os
     import sys
 
@@ -307,18 +313,69 @@ if __name__ == "__main__":
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    railway_db = os.path.join(project_root, "backups", "venezuela_currency_railway.db")
+    # Prefer a recent Railway snapshot in backups/ if present, else local data/.
+    candidate_paths = [
+        os.path.join(project_root, "backups", "venezuela_currency_railway.db"),
+        os.path.join(project_root, "backups", "venezuela_currency.db"),
+        os.path.join(project_root, "data", "venezuela_currency.db"),
+    ]
+    default_db = next((p for p in candidate_paths if os.path.exists(p)), candidate_paths[-1])
 
+    parser = argparse.ArgumentParser(description="Backtest forecasters against historical rates.")
+    parser.add_argument(
+        "models",
+        nargs="*",
+        default=["naive", "stat", "stat_v2", "stat_v3"],
+        help="Models to backtest (default: all four). Choices: naive, stat, stat_v2, stat_v3.",
+    )
+    parser.add_argument("--db", default=default_db, help=f"DB path (default: {default_db})")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.db):
+        print(f"DB not found at {args.db} — skipping CLI backtest.")
+        sys.exit(0)
+
+    forecaster_classes = {}
     try:
         from analysis.forecasters.naive import NaiveForecaster
+        forecaster_classes["naive"] = NaiveForecaster
     except ImportError:
-        print("Naive forecaster module isn't ready yet — skipping CLI backtest.")
-        print("(analysis.forecasters.naive not importable; the sibling agent may still be building it.)")
-        sys.exit(0)
+        pass
+    try:
+        from analysis.forecasters.stat import StatForecaster
+        forecaster_classes["stat"] = StatForecaster
+    except ImportError:
+        pass
+    try:
+        from analysis.forecasters.stat_v2 import StatV2Forecaster
+        forecaster_classes["stat_v2"] = StatV2Forecaster
+    except ImportError:
+        pass
+    try:
+        from analysis.forecasters.stat_v3 import StatV3Forecaster
+        forecaster_classes["stat_v3"] = StatV3Forecaster
+    except ImportError:
+        pass
 
-    if not os.path.exists(railway_db):
-        print(f"Railway DB not found at {railway_db} — skipping CLI backtest.")
-        sys.exit(0)
+    summaries = []
+    for name in args.models:
+        cls = forecaster_classes.get(name)
+        if cls is None:
+            print(f"Unknown or unimportable model: {name} — skipping.")
+            continue
+        summary = backtest(cls(), db_path=args.db, persist=False)
+        _print_summary(summary)
+        summaries.append(summary)
+        print()
 
-    summary = backtest(NaiveForecaster(), db_path=railway_db, persist=False)
-    _print_summary(summary)
+    # Side-by-side comparison if more than one model ran successfully
+    if len(summaries) > 1:
+        print("=== Side-by-side ===")
+        print(f"{'model':10s} {'n':>5s} {'mean_brier':>12s} {'log_loss':>10s}")
+        for s in summaries:
+            if s["n"] == 0:
+                print(f"{s['forecaster']:10s} {s['n']:>5d}  (no forecasts)")
+                continue
+            ll = f"{s['mean_log_loss']:.4f}" if s["mean_log_loss"] is not None else "n/a"
+            print(f"{s['forecaster']:10s} {s['n']:>5d} {s['mean_brier']:>12.4f} {ll:>10s}")
+        print("naive-uniform Brier ~ 0.6667 (always-uniform baseline)")

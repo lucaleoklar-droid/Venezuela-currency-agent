@@ -11,6 +11,9 @@ from db.db import get_connection, insert_forecast
 from analysis.forecasters import HORIZON_HOURS
 from analysis.forecasters.naive import NaiveForecaster
 from analysis.forecasters.stat import StatForecaster
+from analysis.forecasters.stat_v2 import StatV2Forecaster
+from analysis.forecasters.stat_v3 import StatV3Forecaster
+from analysis.forecasters.enrich import enrich_history
 from analysis.forecasters.backtest import score_pending_live
 
 logger = logging.getLogger(__name__)
@@ -21,19 +24,24 @@ MIN_HISTORY_FOR_FORECAST = 12
 
 def _load_history(lookback_days: int) -> list[dict]:
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT timestamp, bcv_rate, parallel_rate, spread_pct "
-        "FROM rates "
-        "WHERE bcv_rate IS NOT NULL AND parallel_rate IS NOT NULL "
-        "AND timestamp >= datetime('now', ?) "
-        "ORDER BY timestamp ASC",
-        (f"-{lookback_days} days",),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, bcv_rate, parallel_rate, spread_pct "
+            "FROM rates "
+            "WHERE bcv_rate IS NOT NULL AND parallel_rate IS NOT NULL "
+            "AND timestamp >= datetime('now', ?) "
+            "ORDER BY timestamp ASC",
+            (f"-{lookback_days} days",),
+        ).fetchall()
+        history = [dict(r) for r in rows]
+        # Enrich in-process with the same open connection — avoids reopening
+        # and gives Stage 3 forecasters (StatV2) the operational signals they need.
+        return enrich_history(history, conn=conn)
+    finally:
+        conn.close()
 
 
-DEFAULT_FORECASTERS = (NaiveForecaster, StatForecaster)
+DEFAULT_FORECASTERS = (NaiveForecaster, StatForecaster, StatV2Forecaster, StatV3Forecaster)
 
 
 def _run_one(forecaster, history: list[dict], made_at: str, target_at: str,
