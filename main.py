@@ -181,6 +181,34 @@ def scrape_and_store():
             logger.info(f"Stored: BCV={bcv_rate}, Parallel={parallel_rate}, Spread={spread_pct}%")
             new_data = True
 
+    # P2P rate — supplementary signal, never blocks main flow
+    try:
+        from scrapers.binance_p2p_scraper import fetch_p2p_rate
+        from db.db import insert_p2p_rate
+        p2p = fetch_p2p_rate()
+        insert_p2p_rate(
+            timestamp=p2p["timestamp"],
+            asset=p2p["asset"],
+            fiat=p2p["fiat"],
+            best_bid=p2p["best_bid"],
+            best_ask=p2p["best_ask"],
+            mid_price=p2p["mid_price"],
+            bid_ask_spread_pct=p2p["bid_ask_spread_pct"],
+            n_bid_ads=p2p["n_bid_ads"],
+            n_ask_ads=p2p["n_ask_ads"],
+            source=p2p["source"],
+            error=p2p["error"],
+        )
+        if p2p["ok"]:
+            logger.info(
+                f"P2P: mid={p2p['mid_price']} bid={p2p['best_bid']} "
+                f"ask={p2p['best_ask']} spread={p2p['bid_ask_spread_pct']}%"
+            )
+        else:
+            logger.warning(f"P2P fetch not ok: {p2p['error']}")
+    except Exception as e:
+        logger.warning(f"P2P scrape failed (non-fatal): {e}")
+
     try:
         process_alerts()
     except Exception as e:

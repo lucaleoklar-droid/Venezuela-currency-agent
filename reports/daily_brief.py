@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from db.db import (get_latest_rate, get_recent_rates, get_avg_spread,
                    get_undelivered_alerts, upsert_daily_brief_action,
-                   get_latest_forecast)
+                   get_latest_forecast, get_latest_p2p_rate)
 from analysis.analyzer import (
     compute_change_pct, get_trend_description, get_rates_last_n_days,
     forecast_parallel_24h, SPREAD_ELEVATED, SPREAD_CRITICAL,
@@ -171,6 +171,13 @@ def generate_and_send():
     except Exception as e:
         logger.exception(f"Failed to store daily brief action: {e}")
 
+    p2p = get_latest_p2p_rate()
+    p2p_line = None
+    if p2p and p2p.get("mid_price") and parallel:
+        diff_pct = (p2p["mid_price"] - parallel) / parallel * 100
+        sign = "+" if diff_pct >= 0 else ""
+        p2p_line = f"{p2p['mid_price']:.2f} VES/USDT ({sign}{diff_pct:.1f}% vs paralelo)"
+
     # Generate a fresh chart so the brief ships as a photo with caption.
     # Failure is non-fatal: telegram_bot will fall back to text-only.
     data_dir = os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__)))
@@ -192,6 +199,7 @@ def generate_and_send():
         trend_7d=trend_7d,
         analysis_text=analysis_text,
         chart_path=chart_path,
+        p2p_line=p2p_line,
     )
     if success:
         logger.info("Daily brief sent successfully")

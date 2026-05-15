@@ -90,13 +90,24 @@ def _build_current_json() -> str:
     if not rows:
         return json.dumps({"error": "no data yet"})
     r = rows[0]
-    return json.dumps({
+    result = {
         "timestamp_utc": r["timestamp"],
         "bcv_rate": r["bcv_rate"],
         "parallel_rate": r["parallel_rate"],
         "spread_pct": r["spread_pct"],
         "source": r["source"],
-    }, indent=2)
+    }
+    from db.db import get_latest_p2p_rate
+    p2p = get_latest_p2p_rate()
+    if p2p:
+        result["binance_p2p"] = {
+            "timestamp_utc": p2p["timestamp"],
+            "mid_price_ves_per_usdt": p2p["mid_price"],
+            "best_bid": p2p["best_bid"],
+            "best_ask": p2p["best_ask"],
+            "bid_ask_spread_pct": p2p["bid_ask_spread_pct"],
+        }
+    return json.dumps(result, indent=2)
 
 
 _DIRECTION_SYMBOL = {"widen": "↑", "stable": "→", "narrow": "↓"}
@@ -187,6 +198,16 @@ def _build_root_readme() -> str:
     else:
         bcv_str = par_str = spread_str = updated_str = "—"
 
+    from db.db import get_latest_p2p_rate
+    p2p = get_latest_p2p_rate()
+    if p2p and p2p.get("mid_price") and current and current[0].get("parallel_rate"):
+        parallel_rate = current[0]["parallel_rate"]
+        diff_pct = (p2p["mid_price"] - parallel_rate) / parallel_rate * 100
+        sign = "+" if diff_pct >= 0 else ""
+        p2p_str = f"**{p2p['mid_price']:.2f}** VES/USDT ({sign}{diff_pct:.1f}% vs paralelo)"
+    else:
+        p2p_str = "—"
+
     forecast_str = "—"
     for preferred in ("stat_v2", "stat", "naive"):
         s = _forecast_direction_display(preferred)
@@ -232,6 +253,7 @@ def _build_root_readme() -> str:
 | BCV Oficial | {bcv_str} |
 | Paralelo | {par_str} |
 | Brecha · Spread | {spread_str} |
+| Binance P2P USDT/VES | {p2p_str} |
 | **Pronóstico 24h · 24h Forecast** | **{forecast_str}** |
 | Actualizado · Updated | {updated_str} |
 

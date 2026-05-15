@@ -147,7 +147,7 @@ def send_alert(alert_type: str, message: str, bcv_rate=None, parallel_rate=None,
 
 
 def _build_brief_text(bcv_rate, parallel_rate, spread_pct, spread_status,
-                      change_24h, trend_7d, analysis_text) -> str:
+                      change_24h, trend_7d, analysis_text, p2p_line=None) -> str:
     status_emoji = {"NORMAL": "🟢", "ELEVADA": "🟡", "CRITICA": "🔴"}.get(spread_status, "⚪")
 
     # Only show direction emoji for moves > 0.5% (smaller moves are noise)
@@ -170,19 +170,21 @@ def _build_brief_text(bcv_rate, parallel_rate, spread_pct, spread_status,
         f"Brecha:    <b>{spread_pct:.1f}%</b>  {status_emoji} {spread_status}",
         f"24h:       {change_str}",
         f"Tendencia: {_escape(trend_7d)}",
-        "",
-        _escape(analysis_text),
     ]
+    if p2p_line:
+        lines.append(f"P2P USDT:  {_escape(p2p_line)}")
+    lines += ["", _escape(analysis_text)]
     return "\n".join(lines)
 
 
 def send_daily_brief(bcv_rate, parallel_rate, spread_pct, spread_status,
                      change_24h, trend_7d, analysis_text,
-                     chart_path: str | None = None) -> bool:
+                     chart_path: str | None = None,
+                     p2p_line: str | None = None) -> bool:
     """Send the daily brief. If chart_path is given and the file exists, ship
     as photo with caption; otherwise fall back to a text message."""
     text = _build_brief_text(bcv_rate, parallel_rate, spread_pct, spread_status,
-                             change_24h, trend_7d, analysis_text)
+                             change_24h, trend_7d, analysis_text, p2p_line=p2p_line)
     if chart_path:
         import os
         if os.path.exists(chart_path):

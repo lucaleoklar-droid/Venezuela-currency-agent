@@ -147,12 +147,28 @@ def init_db():
                 error TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS p2p_rates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                fiat TEXT NOT NULL,
+                best_bid REAL,
+                best_ask REAL,
+                mid_price REAL,
+                bid_ask_spread_pct REAL,
+                n_bid_ads INTEGER,
+                n_ask_ads INTEGER,
+                source TEXT NOT NULL,
+                error TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_rates_timestamp ON rates(timestamp);
             CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_date ON daily_analysis(date);
             CREATE INDEX IF NOT EXISTS idx_oil_date ON oil_prices(observation_date);
             CREATE INDEX IF NOT EXISTS idx_news_published ON news_signals(published_at);
             CREATE INDEX IF NOT EXISTS idx_claude_calls_ts ON claude_calls(ts);
+            CREATE INDEX IF NOT EXISTS idx_p2p_rates_timestamp ON p2p_rates(timestamp);
         """)
 
         # Migrations for legacy databases — add columns that may be missing
@@ -469,6 +485,29 @@ def log_claude_call(prompt_type: str, model: str, input_tokens: int | None,
             (datetime.now().isoformat(), prompt_type, model, input_tokens,
              output_tokens, cache_read_tokens, cache_creation_tokens, latency_ms, error)
         )
+
+
+def insert_p2p_rate(timestamp: str, asset: str, fiat: str, best_bid: float | None,
+                    best_ask: float | None, mid_price: float | None,
+                    bid_ask_spread_pct: float | None, n_bid_ads: int,
+                    n_ask_ads: int, source: str, error: str | None) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO p2p_rates (timestamp, asset, fiat, best_bid, best_ask, "
+            "mid_price, bid_ask_spread_pct, n_bid_ads, n_ask_ads, source, error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (timestamp, asset, fiat, best_bid, best_ask, mid_price,
+             bid_ask_spread_pct, n_bid_ads, n_ask_ads, source, error)
+        )
+
+
+def get_latest_p2p_rate() -> dict | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM p2p_rates WHERE mid_price IS NOT NULL "
+            "ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def get_latest_forecast(model_name: str) -> dict | None:
