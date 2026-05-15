@@ -7,7 +7,7 @@ import io
 import tempfile
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from db.db import get_connection
+from db.db import get_connection, get_latest_forecast, get_forecast_brier_summary
 from reports.github_publisher import commit_file as _commit_file
 # NOTE: do NOT import generate_chart here at module level — it imports
 # matplotlib (~100MB RAM). main.py imports this module on startup, so a
@@ -99,6 +99,186 @@ def _build_current_json() -> str:
     }, indent=2)
 
 
+_DIRECTION_SYMBOL = {"widen": "↑", "stable": "→", "narrow": "↓"}
+_DIRECTION_ES = {"widen": "Ensanchando", "stable": "Estable", "narrow": "Estrechando"}
+_DIRECTION_EN = {"widen": "Widening", "stable": "Stable", "narrow": "Narrowing"}
+_MODEL_ORDER = ["naive", "stat", "stat_v2", "stat_v3"]
+_MODEL_LABELS = {
+    "naive": "naive (baseline)",
+    "stat": "stat",
+    "stat_v2": "stat\\_v2 (oil + news · petróleo + noticias)",
+    "stat_v3": "stat\\_v3 (+ payday · quincena)",
+}
+
+
+def _forecast_direction_display(model_name: str) -> str:
+    row = get_latest_forecast(model_name)
+    if not row:
+        return "—"
+    probs = {"widen": row["p_widen"], "stable": row["p_stable"], "narrow": row["p_narrow"]}
+    direction = max(probs, key=probs.get)
+    confidence = round(probs[direction] * 100)
+    sym = _DIRECTION_SYMBOL[direction]
+    return f"{sym} {_DIRECTION_ES[direction]} · {_DIRECTION_EN[direction]} ({confidence}%)"
+
+
+def _build_forecast_json() -> str:
+    forecasts = {}
+    for m in _MODEL_ORDER:
+        row = get_latest_forecast(m)
+        if row:
+            probs = {"widen": row["p_widen"], "stable": row["p_stable"], "narrow": row["p_narrow"]}
+            direction = max(probs, key=probs.get)
+            forecasts[m] = {
+                "made_at": row["made_at"],
+                "target_at": row["target_at"],
+                "p_widen": round(row["p_widen"], 4),
+                "p_stable": round(row["p_stable"], 4),
+                "p_narrow": round(row["p_narrow"], 4),
+                "direction": direction,
+                "confidence_pct": round(probs[direction] * 100, 1),
+            }
+    directions = [v["direction"] for k, v in forecasts.items() if k != "naive"]
+    consensus = max(set(directions), key=directions.count) if directions else None
+    return json.dumps({
+        "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+        "horizon_hours": 24,
+        "consensus_direction": consensus,
+        "models": forecasts,
+    }, indent=2)
+
+
+def _build_accuracy_json() -> str:
+    rows = get_forecast_brier_summary()
+    by_model = {r["model_name"]: r for r in rows}
+    naive_brier = by_model.get("naive", {}).get("mean_brier")
+    models_out = {}
+    for m in _MODEL_ORDER:
+        d = by_model.get(m, {})
+        brier = d.get("mean_brier")
+        n = int(d["n"]) if d.get("n") else 0
+        vs_naive = None
+        if brier is not None and naive_brier is not None and m != "naive":
+            vs_naive = round(brier - naive_brier, 4)
+        models_out[m] = {
+            "mean_brier": round(brier, 4) if brier is not None else None,
+            "n_scored": n,
+            "vs_naive": vs_naive,
+        }
+    return json.dumps({
+        "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+        "note": "Lower Brier is better. Random=0.667, Perfect=0.000. 30+ scored forecasts needed for significance.",
+        "models": models_out,
+    }, indent=2)
+
+
+def _build_root_readme() -> str:
+    current = _query(
+        "SELECT timestamp, bcv_rate, parallel_rate, spread_pct "
+        "FROM rates WHERE bcv_rate IS NOT NULL AND parallel_rate IS NOT NULL "
+        "ORDER BY timestamp DESC LIMIT 1"
+    )
+    if current:
+        r = current[0]
+        bcv_str = f"**{r['bcv_rate']:.2f}** VES/USD" if r["bcv_rate"] else "—"
+        par_str = f"**{r['parallel_rate']:.2f}** VES/USD" if r["parallel_rate"] else "—"
+        spread_str = f"**{r['spread_pct']:.1f}%**" if r["spread_pct"] else "—"
+        updated_str = r["timestamp"][:16].replace("T", " ") + " UTC"
+    else:
+        bcv_str = par_str = spread_str = updated_str = "—"
+
+    forecast_str = "—"
+    for preferred in ("stat_v2", "stat", "naive"):
+        s = _forecast_direction_display(preferred)
+        if s != "—":
+            forecast_str = s
+            break
+
+    accuracy_rows = get_forecast_brier_summary()
+    by_model = {r["model_name"]: r for r in accuracy_rows}
+    naive_brier = by_model.get("naive", {}).get("mean_brier")
+
+    table_lines = []
+    for m in _MODEL_ORDER:
+        label = _MODEL_LABELS[m]
+        d = by_model.get(m, {})
+        brier = d.get("mean_brier")
+        n = int(d["n"]) if d.get("n") else 0
+        brier_str = f"{brier:.4f}" if brier is not None else "—"
+        if m == "naive":
+            vs_str = "—"
+        elif brier is not None and naive_brier is not None:
+            diff = brier - naive_brier
+            sign = "−" if diff < 0 else "+"
+            vs_str = f"{sign}{abs(diff):.4f} {'✓' if diff < 0 else '✗'}"
+        else:
+            vs_str = "—"
+        table_lines.append(f"| {label} | {brier_str} | {vs_str} | {n} |")
+
+    accuracy_table = "\n".join(table_lines)
+
+    return f"""# Venezuela FX Monitor · Monitor Cambiario Venezuela
+
+> **English:** Autonomous agent tracking the Venezuelan parallel USD/VES exchange rate — every 30 minutes, with probabilistic 24h forecasts scored against real outcomes.
+> **Español:** Agente autónomo que monitorea la tasa de cambio paralela USD/VES de Venezuela — cada 30 minutos, con pronósticos de 24h puntuados contra resultados reales.
+
+---
+
+## Live Data · Datos en Vivo
+
+*Auto-updated every 30 min · Actualizado cada 30 min*
+
+| Metric · Métrica | Value · Valor |
+|---|---|
+| BCV Oficial | {bcv_str} |
+| Paralelo | {par_str} |
+| Brecha · Spread | {spread_str} |
+| Pronóstico 24h · 24h Forecast | {forecast_str} |
+| Actualizado · Updated | {updated_str} |
+
+![Venezuela BCV vs parallel rate — last 30 days](data/chart.png)
+
+---
+
+## Forecast Accuracy · Precisión del Pronóstico
+
+*Brier score: lower is better · menor es mejor — Random = 0.667, Perfect = 0.000*
+
+| Model · Modelo | Brier ↓ | vs Baseline | n scored |
+|---|---|---|---|
+{accuracy_table}
+
+*30+ scored forecasts needed for statistical significance · Se necesitan 30+ pronósticos para significancia estadística*
+
+Full forecast data: [data/forecast.json](data/forecast.json) — [data/accuracy.json](data/accuracy.json)
+
+---
+
+## Data Access · Acceso a Datos
+
+| File | Contents | Updated · Actualizado |
+|---|---|---|
+| [data/current.json](data/current.json) | Latest rate reading · Última lectura | Every scrape · Cada scrape |
+| [data/forecast.json](data/forecast.json) | 24h forecasts, all models · Pronósticos 24h | Daily · Diario |
+| [data/accuracy.json](data/accuracy.json) | Running Brier scores · Brier acumulado | Daily · Diario |
+| [data/recent.csv](data/recent.csv) | Last 7 days raw · Últimos 7 días brutos | Every scrape · Cada scrape |
+| [data/daily.csv](data/daily.csv) | Daily avg/min/max | Every scrape · Cada scrape |
+| [data/archive/](data/archive/) | Full history by month · Historial completo | Monthly · Mensual |
+
+---
+
+## How it Works · Cómo Funciona
+
+**English:** An autonomous Python agent scrapes BCV official and parallel market rates every 30 minutes. Four competing forecasting models produce a probabilistic 24h prediction of spread direction each morning. Each prediction is scored against the actual outcome using multiclass Brier score, building a live, verifiable accuracy track record. Operational signals include Brent crude oil prices (FRED API), Venezuelan FX news headlines (RSS keyword scanning), and the bimonthly payday cycle. Deployed on Railway; all data published to this repository automatically.
+
+**Español:** Un agente Python autónomo extrae las tasas BCV oficial y del mercado paralelo cada 30 minutos. Cuatro modelos de pronóstico compiten produciendo predicciones probabilísticas sobre la dirección de la brecha cambiaria a 24 horas cada mañana. Cada predicción se puntúa contra el resultado real usando Brier multiclase, construyendo un historial de precisión verificable en vivo. Las señales operacionales incluyen el precio del petróleo Brent (API FRED), titulares de noticias cambiarias venezolanas (escaneo RSS) y el ciclo de quincena. Desplegado en Railway; todos los datos publicados en este repositorio automáticamente.
+
+---
+
+*Data is informational only and reflects scraped public sources. · Los datos son meramente informativos y reflejan fuentes públicas.*
+"""
+
+
 def _build_readme() -> str:
     return """# Venezuela Currency Data
 
@@ -181,6 +361,27 @@ def export_to_github() -> bool:
         "data/README.md",
         _build_readme().encode("utf-8"),
         f"Documentation update {ts}",
+    ))
+
+    # 6. Current 24h forecasts (all models)
+    success.append(_commit_file(
+        "data/forecast.json",
+        _build_forecast_json().encode("utf-8"),
+        f"Data update {ts}",
+    ))
+
+    # 7. Running Brier accuracy per model
+    success.append(_commit_file(
+        "data/accuracy.json",
+        _build_accuracy_json().encode("utf-8"),
+        f"Data update {ts}",
+    ))
+
+    # 8. Root README — live numbers baked in, regenerated every scrape
+    success.append(_commit_file(
+        "README.md",
+        _build_root_readme().encode("utf-8"),
+        f"Dashboard update {ts}",
     ))
 
     ok_count = sum(1 for s in success if s)

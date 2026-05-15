@@ -5,7 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from db.db import get_connection
+from db.db import get_connection, get_latest_forecast
 from analysis.analyzer import SPREAD_ELEVATED, SPREAD_CRITICAL, SPREAD_EMERGENCY
 
 logger = logging.getLogger(__name__)
@@ -156,6 +156,23 @@ def generate_chart(output_path: str, days: int = 30) -> bool:
 
     ax2.set_ylabel("Brecha %", color=TEXT, fontsize=10)
     ax2.set_xlabel("")
+
+    # Forecast annotation — latest stat_v2 direction, falling back to stat then naive
+    _FSYM = {"widen": "↑", "stable": "→", "narrow": "↓"}
+    _FES = {"widen": "Ensanchando", "stable": "Estable", "narrow": "Estrechando"}
+    for _fm in ("stat_v2", "stat", "naive"):
+        _frow = get_latest_forecast(_fm)
+        if _frow:
+            _probs = {"widen": _frow["p_widen"], "stable": _frow["p_stable"], "narrow": _frow["p_narrow"]}
+            _dir = max(_probs, key=_probs.get)
+            _conf = round(_probs[_dir] * 100)
+            _ftxt = f"Pronóstico 24h: {_FSYM[_dir]} {_FES[_dir]} {_conf}%"
+            ax2.text(
+                0.01, 0.97, _ftxt, transform=ax2.transAxes,
+                color=TEXT, fontsize=8, ha="left", va="top",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=PANEL, edgecolor=GRID, alpha=0.85),
+            )
+            break
 
     ax2.xaxis.set_major_locator(locator)
     ax2.xaxis.set_major_formatter(date_fmt)
