@@ -134,11 +134,25 @@ def init_db():
                 fetched_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS claude_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,                        -- ISO UTC of the API call
+                prompt_type TEXT NOT NULL,               -- 'core_analysis' | 'daily_brief' | 'spike_alert' | 'weekly' | other
+                model TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_creation_tokens INTEGER,
+                latency_ms INTEGER,
+                error TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_rates_timestamp ON rates(timestamp);
             CREATE INDEX IF NOT EXISTS idx_alerts_delivered ON alerts(delivered);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_date ON daily_analysis(date);
             CREATE INDEX IF NOT EXISTS idx_oil_date ON oil_prices(observation_date);
             CREATE INDEX IF NOT EXISTS idx_news_published ON news_signals(published_at);
+            CREATE INDEX IF NOT EXISTS idx_claude_calls_ts ON claude_calls(ts);
         """)
 
         # Migrations for legacy databases — add columns that may be missing
@@ -441,3 +455,44 @@ def get_weekly_data():
             "SELECT COUNT(*) as cnt FROM alerts WHERE timestamp >= datetime('now', '-7 days')"
         ).fetchone()["cnt"]
     return [dict(r) for r in rates], alert_count
+
+
+def log_claude_call(prompt_type: str, model: str, input_tokens: int | None,
+                    output_tokens: int | None, cache_read_tokens: int | None,
+                    cache_creation_tokens: int | None, latency_ms: int | None,
+                    error: str | None = None) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO claude_calls (ts, prompt_type, model, input_tokens, "
+            "output_tokens, cache_read_tokens, cache_creation_tokens, latency_ms, error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(), prompt_type, model, input_tokens,
+             output_tokens, cache_read_tokens, cache_creation_tokens, latency_ms, error)
+        )
+
+
+def get_latest_forecast(model_name: str) -> dict | None:
+    """Most recent forecast row for a model. Used by the synthesizer prompt."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM forecasts WHERE model_name = ? "
+            "ORDER BY made_at DESC LIMIT 1",
+            (model_name,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_claude_usage_summary(days: int = 7) -> dict:
+    """Token + call counts over the last N days. Cheap summary for /estado."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as n, "
+            "SUM(COALESCE(input_tokens,0)) as in_tk, "
+            "SUM(COALESCE(output_tokens,0)) as out_tk, "
+            "SUM(COALESCE(cache_read_tokens,0)) as cache_read, "
+            "SUM(COALESCE(cache_creation_tokens,0)) as cache_create, "
+            "SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors "
+            "FROM claude_calls WHERE ts >= datetime('now', ?)",
+            (f"-{days} days",)
+        ).fetchone()
+    return dict(row) if row else {}

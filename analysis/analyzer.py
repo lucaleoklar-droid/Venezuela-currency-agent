@@ -179,7 +179,7 @@ def run_analysis() -> dict:
     )
 
     logger.info("Running Claude analysis...")
-    response = analyze(prompt)
+    response = analyze(prompt, prompt_type="core_analysis")
 
     return {
         "timestamp": _utcnow().isoformat(),
@@ -292,4 +292,4 @@ def build_spike_message(alert: dict) -> str:
         spread_pct=alert.get("spread_pct") if alert.get("spread_pct") is not None else "N/A",
         detail=alert["detail"],
     )
-    return analyze(prompt, max_tokens=150)
+    return analyze(prompt, max_tokens=150, prompt_type="spike_alert")

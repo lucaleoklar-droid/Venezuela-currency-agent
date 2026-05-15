@@ -1,17 +1,25 @@
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from db.db import (get_latest_rate, get_recent_rates, get_avg_spread,
-                   get_undelivered_alerts, upsert_daily_brief_action)
+                   get_undelivered_alerts, upsert_daily_brief_action,
+                   get_latest_forecast)
 from analysis.analyzer import (
     compute_change_pct, get_trend_description, get_rates_last_n_days,
     forecast_parallel_24h, SPREAD_ELEVATED, SPREAD_CRITICAL,
 )
-from analysis.prompts import DAILY_BRIEF_PROMPT
-from analysis.claude_client import analyze
+from analysis.prompts import (DAILY_BRIEF_PROMPT_V2_SYSTEM,
+                              DAILY_BRIEF_PROMPT_V2_USER)
+from analysis.claude_client import analyze_v2
 from alerts.telegram_bot import send_daily_brief
+from reports.chart_generator import generate_chart
+import os
 
 logger = logging.getLogger(__name__)
+
+# How recent a forecast must be to be trusted as "today's view". Anything older
+# is treated as stale and falls back to a "no forecast available" string.
+FORECAST_FRESH_HOURS = 4
 
 
 _VALID_ACTIONS = ("CONVERTIR", "ESPERAR", "NEUTRAL")
@@ -45,6 +53,25 @@ def parse_and_enforce_action(text: str) -> tuple[str, str]:
             return action, f"Acción: {action}\n{stripped}"
     logger.warning("Daily brief missing Acción prefix — defaulting to NEUTRAL")
     return "NEUTRAL", f"Acción: NEUTRAL\n{stripped}"
+
+
+def _format_forecast_probs(model_name: str) -> str:
+    """Render the latest forecast row for a model as a short, prompt-friendly
+    string. Returns 'no disponible' if no recent forecast exists."""
+    row = get_latest_forecast(model_name)
+    if not row:
+        return "no disponible"
+    try:
+        made_at = datetime.fromisoformat(row["made_at"])
+        if made_at.tzinfo is None:
+            made_at = made_at.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError, KeyError):
+        return "no disponible"
+    age_h = (datetime.now(timezone.utc) - made_at).total_seconds() / 3600
+    if age_h > FORECAST_FRESH_HOURS:
+        return f"obsoleto (hace {age_h:.1f}h)"
+    return (f"widen={row['p_widen']:.0%} stable={row['p_stable']:.0%} "
+            f"narrow={row['p_narrow']:.0%} (hace {age_h:.1f}h)")
 
 
 def get_spread_status(spread_pct: float) -> str:
@@ -103,7 +130,10 @@ def generate_and_send():
     else:
         forecast_str = "datos insuficientes para proyección"
 
-    prompt = DAILY_BRIEF_PROMPT.format(
+    stat_v3_probs = _format_forecast_probs("stat_v3")
+    naive_probs = _format_forecast_probs("naive")
+
+    user_prompt = DAILY_BRIEF_PROMPT_V2_USER.format(
         date=datetime.now().strftime("%A %d de %B, %Y"),
         bcv_rate=bcv,
         parallel_rate=parallel,
@@ -114,10 +144,17 @@ def generate_and_send():
         vs_last_week=vs_last_week,
         active_alerts=active_alerts,
         forecast_24h=forecast_str,
+        stat_v3_probs=stat_v3_probs,
+        naive_probs=naive_probs,
     )
 
-    logger.info("Generating daily brief with Claude...")
-    raw_text = analyze(prompt, max_tokens=240)
+    logger.info(f"Generating daily brief with Claude... (stat_v3: {stat_v3_probs})")
+    raw_text = analyze_v2(
+        system_text=DAILY_BRIEF_PROMPT_V2_SYSTEM,
+        user_text=user_prompt,
+        max_tokens=260,
+        prompt_type="daily_brief",
+    )
     action_signal, analysis_text = parse_and_enforce_action(raw_text)
     logger.info(f"Daily brief action signal: {action_signal}")
 
@@ -134,6 +171,18 @@ def generate_and_send():
     except Exception as e:
         logger.exception(f"Failed to store daily brief action: {e}")
 
+    # Generate a fresh chart so the brief ships as a photo with caption.
+    # Failure is non-fatal: telegram_bot will fall back to text-only.
+    data_dir = os.getenv("DATA_DIR", os.path.dirname(os.path.dirname(__file__)))
+    chart_path = os.path.join(data_dir, "daily_brief_chart.png")
+    try:
+        ok = generate_chart(chart_path, days=14)
+        if not ok:
+            chart_path = None
+    except Exception as e:
+        logger.exception(f"Chart generation failed (will send text-only): {e}")
+        chart_path = None
+
     success = send_daily_brief(
         bcv_rate=bcv,
         parallel_rate=parallel,
@@ -142,6 +191,7 @@ def generate_and_send():
         change_24h=change_24h,
         trend_7d=trend_7d,
         analysis_text=analysis_text,
+        chart_path=chart_path,
     )
     if success:
         logger.info("Daily brief sent successfully")

@@ -75,7 +75,7 @@ def generate_report() -> str:
     )
 
     logger.info("Generating weekly report with Claude...")
-    analysis = analyze(prompt, max_tokens=600)
+    analysis = analyze(prompt, max_tokens=600, prompt_type="weekly_report")
 
     week_str = datetime.now().strftime("Semana del %d de %B, %Y")
     report = f"# Reporte Semanal Venezuela Divisas\n{week_str}\n\n"

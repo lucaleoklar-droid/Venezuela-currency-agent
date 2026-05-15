@@ -6,10 +6,14 @@ import sys
 import os
 import signal
 import logging
-import schedule
 import threading
 import time
+import json
 from datetime import datetime, timezone, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -315,10 +319,6 @@ def run_news_scan():
 
 
 def run_monthly_report():
-    # schedule library can't do "1st of month", so we gate inside the daily job
-    today = datetime.now(timezone.utc).day
-    if today != 1:
-        return
     logger.info("--- Monthly retrospective ---")
     try:
         send_monthly_report()
@@ -326,33 +326,165 @@ def run_monthly_report():
         logger.exception(f"Monthly report error: {e}")
 
 
-def setup_schedule():
-    schedule.every(30).minutes.do(scrape_and_store)
-    schedule.every(4).hours.do(run_analysis_job)
-    schedule.every().day.at("11:00").do(run_daily_brief)  # 07:00 Venezuela
-    schedule.every().day.at("11:30").do(run_monthly_report)  # fires only on day-of-month=1
-    schedule.every().monday.at("12:00").do(run_weekly_report)
-    schedule.every().day.at("07:00").do(run_db_backup)  # 03:00 Venezuela — quietest hour
-    schedule.every(2).hours.do(run_chart_export)  # decoupled from scrape — heavy matplotlib work
-    schedule.every(6).hours.do(heartbeat)
-    schedule.every().day.at("10:30").do(run_brent_fetch)  # 25 min before forecast
-    schedule.every(3).hours.do(run_news_scan)  # Stage 3 news signal
-    schedule.every().day.at("10:55").do(run_daily_forecast)  # ~5min before daily brief
-    schedule.every().hour.do(run_score_forecasts)  # mature any 24h-old forecasts
+# Soft per-job duration limit. Exceeding this logs a warning so we notice
+# scrapers/Claude calls degrading before they cause restart loops. Hard
+# thread-killing isn't safe in CPython for arbitrary code (matplotlib,
+# requests, etc.), so we keep this purely observational.
+JOB_SOFT_TIMEOUT_SECONDS = {
+    "scrape_and_store": 60,
+    "run_analysis_job": 90,
+    "run_daily_brief": 90,
+    "run_weekly_report": 120,
+    "run_monthly_report": 60,
+    "run_db_backup": 60,
+    "run_chart_export": 60,
+    "heartbeat": 10,
+    "run_brent_fetch": 30,
+    "run_news_scan": 60,
+    "run_daily_forecast": 60,
+    "run_score_forecasts": 30,
+}
 
-    logger.info("Schedule:")
-    logger.info("  Scrape:        every 30 min (CSVs export inline, chart does NOT)")
-    logger.info("  Telegram:      long-poll thread (near-instant queries)")
-    logger.info("  Analysis:      every 4 hours")
-    logger.info("  Daily brief:   11:00 UTC (07:00 VET)")
-    logger.info("  Weekly report: Mondays 12:00 UTC")
-    logger.info("  DB backup:     daily 07:00 UTC (03:00 VET)")
-    logger.info("  Chart export:  every 2 hours")
-    logger.info("  Heartbeat:     every 6 hours")
-    logger.info("  Brent fetch:   daily 10:30 UTC (FRED DCOILBRENTEU)")
-    logger.info("  News scan:     every 3 hours (FX intervention keywords)")
-    logger.info("  Forecast:      daily 10:55 UTC (naive + stat + stat_v2 + stat_v3, 24h horizon)")
-    logger.info("  Forecast score: every hour (matures past forecasts)")
+# Last-success / last-error timestamps per job. Read by the /healthz endpoint
+# to surface what's happy vs. what's stuck.
+_job_state: dict[str, dict] = {}
+_job_state_lock = threading.Lock()
+
+
+def _record_job_state(name: str, *, started: bool = False, ok: bool | None = None,
+                      duration_s: float | None = None, error: str | None = None):
+    with _job_state_lock:
+        entry = _job_state.setdefault(name, {})
+        now = datetime.now(timezone.utc).isoformat()
+        if started:
+            entry["last_started"] = now
+        if ok is True:
+            entry["last_success"] = now
+            entry["last_duration_s"] = round(duration_s or 0, 2)
+            entry["last_error"] = None
+        elif ok is False:
+            entry["last_failure"] = now
+            entry["last_error"] = error
+            entry["last_duration_s"] = round(duration_s or 0, 2)
+
+
+def _job_wrapper(name: str, fn):
+    """Wrap a scheduled job: time it, log duration, soft-timeout warn, record state."""
+    def _runner():
+        _record_job_state(name, started=True)
+        t0 = time.monotonic()
+        try:
+            fn()
+            duration = time.monotonic() - t0
+            soft_limit = JOB_SOFT_TIMEOUT_SECONDS.get(name)
+            if soft_limit and duration > soft_limit:
+                logger.warning(
+                    f"Job '{name}' took {duration:.1f}s "
+                    f"(soft limit {soft_limit}s) — investigate slow dependencies"
+                )
+            else:
+                logger.debug(f"Job '{name}' done in {duration:.1f}s")
+            _record_job_state(name, ok=True, duration_s=duration)
+        except Exception as e:
+            duration = time.monotonic() - t0
+            logger.exception(f"Job '{name}' failed after {duration:.1f}s: {e}")
+            _record_job_state(name, ok=False, duration_s=duration, error=f"{type(e).__name__}: {e}")
+    _runner.__name__ = name
+    return _runner
+
+
+def setup_schedule(scheduler: BackgroundScheduler):
+    """Register all recurring jobs on the APScheduler instance.
+
+    `max_instances=1` everywhere: if a job is still running when its next tick
+    arrives, the next tick is skipped rather than piled up. `coalesce=True`:
+    if multiple ticks were missed (e.g. after a restart), only run one.
+    `misfire_grace_time` lets a slightly-late job still fire."""
+    common = {"max_instances": 1, "coalesce": True, "misfire_grace_time": 60}
+
+    jobs = [
+        ("scrape_and_store",   scrape_and_store,   IntervalTrigger(minutes=30)),
+        ("run_analysis_job",   run_analysis_job,   IntervalTrigger(hours=4)),
+        ("run_daily_brief",    run_daily_brief,    CronTrigger(hour=11, minute=0)),   # 07:00 VET
+        ("run_monthly_report", run_monthly_report, CronTrigger(day=1, hour=11, minute=30)),
+        ("run_weekly_report",  run_weekly_report,  CronTrigger(day_of_week="mon", hour=12, minute=0)),
+        ("run_db_backup",      run_db_backup,      CronTrigger(hour=7, minute=0)),    # 03:00 VET
+        ("run_chart_export",   run_chart_export,   IntervalTrigger(hours=2)),
+        ("heartbeat",          heartbeat,          IntervalTrigger(hours=6)),
+        ("run_brent_fetch",    run_brent_fetch,    CronTrigger(hour=10, minute=30)),
+        ("run_news_scan",      run_news_scan,      IntervalTrigger(hours=3)),
+        ("run_daily_forecast", run_daily_forecast, CronTrigger(hour=10, minute=55)),
+        ("run_score_forecasts",run_score_forecasts,IntervalTrigger(hours=1)),
+    ]
+    for name, fn, trigger in jobs:
+        scheduler.add_job(_job_wrapper(name, fn), trigger=trigger, id=name, **common)
+
+    logger.info("Schedule (APScheduler, UTC):")
+    logger.info("  scrape_and_store    every 30 min")
+    logger.info("  run_analysis_job    every 4 hours")
+    logger.info("  run_daily_brief     daily 11:00 UTC (07:00 VET) — now ships chart photo")
+    logger.info("  run_monthly_report  cron day=1 11:30 UTC (proper, no day-guard hack)")
+    logger.info("  run_weekly_report   Mondays 12:00 UTC")
+    logger.info("  run_db_backup       daily 07:00 UTC (03:00 VET)")
+    logger.info("  run_chart_export    every 2 hours")
+    logger.info("  heartbeat           every 6 hours")
+    logger.info("  run_brent_fetch     daily 10:30 UTC")
+    logger.info("  run_news_scan       every 3 hours")
+    logger.info("  run_daily_forecast  daily 10:55 UTC (naive + stat + stat_v2 + stat_v3)")
+    logger.info("  run_score_forecasts hourly")
+
+
+class _LivenessHandler(BaseHTTPRequestHandler):
+    """Tiny health endpoint. /healthz returns 200 + JSON snapshot of job state
+    so Railway (or anyone) can verify the agent is alive without process-only
+    checks. /readyz is the same but requires recent data."""
+    server_version = "VzlaAgentLiveness/1.0"
+
+    def _json(self, status: int, payload: dict):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):  # noqa: N802 (BaseHTTPRequestHandler API)
+        if self.path not in ("/healthz", "/readyz", "/"):
+            self._json(404, {"error": "not_found"})
+            return
+        with _job_state_lock:
+            snapshot = {k: dict(v) for k, v in _job_state.items()}
+        data_age = _last_data_age_minutes()
+        payload = {
+            "alive": True,
+            "now": datetime.now(timezone.utc).isoformat(),
+            "data_age_minutes": data_age,
+            "jobs": snapshot,
+        }
+        if self.path == "/readyz":
+            ready = data_age is not None and data_age < 90
+            payload["ready"] = ready
+            self._json(200 if ready else 503, payload)
+            return
+        self._json(200, payload)
+
+    def log_message(self, format, *args):  # silence default access log spam
+        return
+
+
+def start_liveness_server(port: int = 8080):
+    """Background HTTP server on `port` exposing /healthz and /readyz.
+    Honours PORT env var (Railway sets this); falls back to the supplied port."""
+    bind_port = int(os.getenv("PORT", port))
+    try:
+        server = HTTPServer(("0.0.0.0", bind_port), _LivenessHandler)
+    except OSError as e:
+        logger.warning(f"Could not bind liveness server on :{bind_port}: {e}")
+        return None
+    t = threading.Thread(target=server.serve_forever, daemon=True, name="liveness")
+    t.start()
+    logger.info(f"Liveness server listening on :{bind_port} (/healthz, /readyz)")
+    return server
 
 
 def start_telegram_thread():
@@ -487,21 +619,26 @@ def main():
             logger.exception(f"Startup alert flush error: {e}")
 
     start_telegram_thread()
-    setup_schedule()
-    logger.info("Scheduler running. Press Ctrl+C to stop.")
+    start_liveness_server()
+    scheduler = BackgroundScheduler(timezone="UTC")
+    setup_schedule(scheduler)
+    scheduler.start()
+    logger.info("APScheduler running. Press Ctrl+C to stop.")
 
     last_uptime_log = process_start
-    while True:
+    try:
+        while True:
+            now = datetime.now(timezone.utc)
+            if (now - last_uptime_log).total_seconds() >= 600:  # every 10 min
+                uptime_min = (now - process_start).total_seconds() / 60
+                logger.info(f"Alive — uptime {uptime_min:.1f} min")
+                last_uptime_log = now
+            time.sleep(30)
+    finally:
         try:
-            schedule.run_pending()
-        except Exception as e:
-            logger.exception(f"Scheduler error: {e}")
-        now = datetime.now(timezone.utc)
-        if (now - last_uptime_log).total_seconds() >= 600:  # every 10 min
-            uptime_min = (now - process_start).total_seconds() / 60
-            logger.info(f"Alive — uptime {uptime_min:.1f} min")
-            last_uptime_log = now
-        time.sleep(30)
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
