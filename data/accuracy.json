@@ -1,0 +1,26 @@
+{
+  "updated_at": "2026-05-15T22:43:39.536027",
+  "note": "Lower Brier is better. Random=0.667, Perfect=0.000. 30+ scored forecasts needed for significance.",
+  "models": {
+    "naive": {
+      "mean_brier": 1.284,
+      "n_scored": 1,
+      "vs_naive": null
+    },
+    "stat": {
+      "mean_brier": 0.6667,
+      "n_scored": 1,
+      "vs_naive": -0.6173
+    },
+    "stat_v2": {
+      "mean_brier": null,
+      "n_scored": 0,
+      "vs_naive": null
+    },
+    "stat_v3": {
+      "mean_brier": null,
+      "n_scored": 0,
+      "vs_naive": null
+    }
+  }
+}
