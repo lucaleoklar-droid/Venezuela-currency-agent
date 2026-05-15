@@ -372,35 +372,15 @@ def export_to_github() -> bool:
         f"Documentation update {ts}",
     ))
 
-    # 6. Current 24h forecasts (all models)
-    success.append(_commit_file(
-        "data/forecast.json",
-        _build_forecast_json().encode("utf-8"),
-        f"Data update {ts}",
-    ))
-
-    # 7. Running Brier accuracy per model
-    success.append(_commit_file(
-        "data/accuracy.json",
-        _build_accuracy_json().encode("utf-8"),
-        f"Data update {ts}",
-    ))
-
-    # 8. Root README — live numbers baked in, regenerated every scrape
-    success.append(_commit_file(
-        "README.md",
-        _build_root_readme().encode("utf-8"),
-        f"Dashboard update {ts}",
-    ))
-
     ok_count = sum(1 for s in success if s)
     logger.info(f"GitHub export: {ok_count}/{len(success)} files committed")
     return ok_count > 0
 
 
 def export_chart_to_github() -> bool:
-    """Generate and commit the rates chart. Heavy (matplotlib) — call from its own
-    schedule, not from every scrape."""
+    """Generate chart + commit dashboard files. Runs every 2h unconditionally —
+    so README, forecast.json, and accuracy.json always stay fresh independent
+    of whether rate data changed."""
     if not os.getenv("GITHUB_TOKEN") or not os.getenv("GITHUB_REPO"):
         return False
     import gc
@@ -414,8 +394,7 @@ def export_chart_to_github() -> bool:
             return False
         with open(tmp_path, "rb") as f:
             chart_bytes = f.read()
-        ok = _commit_file("data/chart.png", chart_bytes, f"Chart update {ts}")
-        return ok
+        _commit_file("data/chart.png", chart_bytes, f"Chart update {ts}")
     except Exception as e:
         logger.error(f"Chart generation failed: {e}")
         return False
@@ -426,3 +405,9 @@ def export_chart_to_github() -> bool:
             except OSError:
                 pass
         gc.collect()
+
+    # Dashboard files — commit unconditionally so README/forecasts are always current
+    _commit_file("data/forecast.json", _build_forecast_json().encode("utf-8"), f"Dashboard update {ts}")
+    _commit_file("data/accuracy.json", _build_accuracy_json().encode("utf-8"), f"Dashboard update {ts}")
+    _commit_file("README.md", _build_root_readme().encode("utf-8"), f"Dashboard update {ts}")
+    return True

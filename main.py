@@ -618,6 +618,7 @@ def main():
         except Exception as e:
             logger.exception(f"Startup alert flush error: {e}")
 
+    run_chart_export()
     start_telegram_thread()
     start_liveness_server()
     scheduler = BackgroundScheduler(timezone="UTC")
