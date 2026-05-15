@@ -46,7 +46,7 @@ from reports.daily_brief import generate_and_send as send_daily_brief
 from reports.weekly_report import generate_report
 from reports.monthly_report import generate_and_send as send_monthly_report
 from reports.github_publisher import commit_weekly_report
-from reports.csv_exporter import export_to_github, export_chart_to_github
+from reports.csv_exporter import export_to_github, export_dashboard_to_github
 from alerts.telegram_poller import poll_for_messages
 from analysis.forecasters.jobs import make_daily_forecast, score_due_forecasts
 from scrapers.oil_fetcher import fetch_recent as fetch_brent_recent
@@ -237,19 +237,31 @@ def run_weekly_report():
         logger.exception(f"Weekly report error: {e}")
 
 
+_SCRAPER_ALERT_COOLDOWN_HOURS = 12
+
+
 def heartbeat():
-    """Periodic health log — confirms the agent is alive."""
-    from scrapers.scraper_health import get_health_report
+    """Periodic health log — confirms the agent is alive. Sends a Telegram
+    warning if the parallel scraper has gone stale (no data for >3h)."""
+    from scrapers.scraper_health import get_health_report, check_parallel_freshness, hours_since
+    from db.db import get_cooldown, set_cooldown
+    from alerts.telegram_bot import send_message
+
     h = get_health_report()
     logger.info(f"Heartbeat: data_freshness={h['data_freshness']}, bcv={h['bcv_freshness']}")
 
-
-def run_csv_export():
-    """Export rates and alerts to GitHub as CSV files."""
-    try:
-        export_to_github()
-    except Exception as e:
-        logger.exception(f"CSV export error: {e}")
+    parallel = check_parallel_freshness()
+    if parallel["stale"]:
+        last = get_cooldown("scraper_stale_alert")
+        if last is None or hours_since(last) > _SCRAPER_ALERT_COOLDOWN_HOURS:
+            msg = (
+                f"⚠️ <b>Scraper Warning · Alerta de scraper</b>\n"
+                f"{parallel['message']}\n"
+                f"Check Railway logs · Revisar logs de Railway"
+            )
+            send_message(msg, with_keyboard=False)
+            set_cooldown("scraper_stale_alert", _utcnow_iso())
+            logger.warning(f"Scraper stale alert sent: {parallel['message']}")
 
 
 def run_db_backup():
@@ -261,7 +273,7 @@ def run_db_backup():
 
 def run_chart_export():
     try:
-        export_chart_to_github()
+        export_dashboard_to_github()
     except Exception as e:
         logger.exception(f"Chart export error: {e}")
 

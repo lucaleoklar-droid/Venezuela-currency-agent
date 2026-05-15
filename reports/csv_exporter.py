@@ -377,7 +377,7 @@ def export_to_github() -> bool:
     return ok_count > 0
 
 
-def export_chart_to_github() -> bool:
+def export_dashboard_to_github() -> bool:
     """Generate chart + commit dashboard files. Runs every 2h unconditionally —
     so README, forecast.json, and accuracy.json always stay fresh independent
     of whether rate data changed."""

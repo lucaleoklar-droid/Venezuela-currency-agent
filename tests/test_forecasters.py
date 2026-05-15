@@ -1,14 +1,160 @@
-"""Forecaster math: outcome bucketing, prob validation, Brier, log_loss,
-payday features. All pure functions — no DB, no I/O."""
+"""Forecaster math and forecaster class smoke tests. All pure — no DB, no I/O."""
 import math
 import pytest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from analysis.forecasters import (
     OUTCOMES, STABILITY_BAND_PP,
     brier_score, compute_outcome, log_loss, uniform, validate_probs,
 )
+from analysis.forecasters.naive import NaiveForecaster
+from analysis.forecasters.stat import StatForecaster
+from analysis.forecasters.stat_v2 import StatV2Forecaster
+from analysis.forecasters.stat_v3 import StatV3Forecaster
 from analysis.forecasters.payday import payday_features
+
+
+# ---------------------------------------------------------------------------
+# Shared test helper
+# ---------------------------------------------------------------------------
+
+def _make_history(n_readings=60, base_spread=30.0, trend_pp=0.0, enriched=False):
+    """Synthetic history: readings every 6h, optional linear trend.
+    enriched=True adds brent and news fields needed by StatV2/V3."""
+    rows = []
+    base = datetime(2026, 1, 1, 0, 0, 0)
+    for i in range(n_readings):
+        t = base + timedelta(hours=i * 6)
+        spread = base_spread + trend_pp * i
+        parallel = 100.0 * (1 + spread / 100)
+        row = {
+            "timestamp": t.isoformat(),
+            "bcv_rate": 100.0,
+            "parallel_rate": parallel,
+            "spread_pct": spread,
+        }
+        if enriched:
+            row["brent_usd_per_bbl"] = 75.0
+            row["brent_usd_per_bbl_7d_ago"] = 73.0
+            row["news_count_7d"] = 0
+        rows.append(row)
+    return rows
+
+
+def _is_valid_probs(p: dict) -> bool:
+    return (
+        abs(sum(p.values()) - 1.0) < 1e-9
+        and all(0.0 <= v <= 1.0 for v in p.values())
+        and set(p.keys()) == {"widen", "stable", "narrow"}
+    )
+
+
+# ---------------------------------------------------------------------------
+# NaiveForecaster
+# ---------------------------------------------------------------------------
+
+class TestNaiveForecaster:
+    def test_valid_probs_on_normal_history(self):
+        p = NaiveForecaster().forecast(_make_history(60))
+        assert _is_valid_probs(p)
+
+    def test_empty_history_returns_uniform(self):
+        assert NaiveForecaster().forecast([]) == uniform()
+
+    def test_single_reading_returns_uniform(self):
+        assert NaiveForecaster().forecast(_make_history(1)) == uniform()
+
+    def test_stable_spread_favours_stable(self):
+        # Flat spread → all outcomes are stable → Laplace-smoothed stable dominant
+        p = NaiveForecaster().forecast(_make_history(60, trend_pp=0.0))
+        assert p["stable"] >= p["widen"]
+        assert p["stable"] >= p["narrow"]
+
+    def test_rising_spread_favours_widen(self):
+        # Spread grows 0.5pp per reading → most 24h outcomes are widen
+        p = NaiveForecaster().forecast(_make_history(60, trend_pp=0.5))
+        assert p["widen"] > p["stable"]
+        assert p["widen"] > p["narrow"]
+
+
+# ---------------------------------------------------------------------------
+# StatForecaster
+# ---------------------------------------------------------------------------
+
+class TestStatForecaster:
+    def test_valid_probs_on_normal_history(self):
+        p = StatForecaster().forecast(_make_history(60))
+        assert _is_valid_probs(p)
+
+    def test_empty_history_returns_uniform(self):
+        assert StatForecaster().forecast([]) == uniform()
+
+    def test_too_few_examples_returns_uniform(self):
+        # min_examples default is 5; 4 readings can't produce 5 non-overlapping
+        # 6h-decimated training points with a 24h-horizon outcome each
+        p = StatForecaster().forecast(_make_history(4))
+        assert p == uniform()
+
+    def test_missing_spread_in_history_returns_uniform(self):
+        rows = _make_history(60)
+        for r in rows:
+            r["spread_pct"] = None
+        assert StatForecaster().forecast(rows) == uniform()
+
+
+# ---------------------------------------------------------------------------
+# StatV2Forecaster
+# ---------------------------------------------------------------------------
+
+class TestStatV2Forecaster:
+    def test_valid_probs_with_enriched_history(self):
+        p = StatV2Forecaster().forecast(_make_history(60, enriched=True))
+        assert _is_valid_probs(p)
+
+    def test_missing_brent_returns_uniform(self):
+        # Without brent fields _features_at returns None for every row
+        p = StatV2Forecaster().forecast(_make_history(60, enriched=False))
+        assert p == uniform()
+
+    def test_zero_brent_prev_returns_uniform(self):
+        rows = _make_history(60, enriched=True)
+        for r in rows:
+            r["brent_usd_per_bbl_7d_ago"] = 0.0
+        assert StatV2Forecaster().forecast(rows) == uniform()
+
+    def test_empty_history_returns_uniform(self):
+        assert StatV2Forecaster().forecast([]) == uniform()
+
+    def test_none_brent_returns_uniform(self):
+        rows = _make_history(60, enriched=True)
+        for r in rows:
+            r["brent_usd_per_bbl"] = None
+        assert StatV2Forecaster().forecast(rows) == uniform()
+
+
+# ---------------------------------------------------------------------------
+# StatV3Forecaster
+# ---------------------------------------------------------------------------
+
+class TestStatV3Forecaster:
+    def test_valid_probs_with_enriched_history(self):
+        p = StatV3Forecaster().forecast(_make_history(60, enriched=True))
+        assert _is_valid_probs(p)
+
+    def test_missing_brent_returns_uniform(self):
+        p = StatV3Forecaster().forecast(_make_history(60, enriched=False))
+        assert p == uniform()
+
+    def test_empty_history_returns_uniform(self):
+        assert StatV3Forecaster().forecast([]) == uniform()
+
+    def test_output_independent_of_v2_on_same_data(self):
+        # V3 adds payday features — its output must still be valid even if it
+        # differs from V2. We don't assert they must differ (kernel may converge
+        # to same answer on synthetic flat data) but both must be valid.
+        history = _make_history(60, enriched=True)
+        assert _is_valid_probs(StatV2Forecaster().forecast(history))
+        assert _is_valid_probs(StatV3Forecaster().forecast(history))
 
 
 # ---------------------------------------------------------------------------
