@@ -8,7 +8,7 @@ import tempfile
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from db.db import get_connection, get_latest_forecast, get_forecast_brier_summary
-from reports.github_publisher import commit_file as _commit_file
+from reports.github_publisher import commit_files as _commit_files
 # NOTE: do NOT import generate_chart here at module level — it imports
 # matplotlib (~100MB RAM). main.py imports this module on startup, so a
 # top-level import would load matplotlib into every Railway restart even
@@ -356,47 +356,18 @@ def export_to_github() -> bool:
         return False
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    success = []
-
-    # 1. Current JSON (small, latest reading)
-    success.append(_commit_file(
-        "data/current.json",
-        _build_current_json().encode("utf-8"),
-        f"Data update {ts}",
-    ))
-
-    # 2. Recent CSV (last 7 days)
-    success.append(_commit_file(
-        "data/recent.csv",
-        _build_recent_csv().encode("utf-8"),
-        f"Data update {ts}",
-    ))
-
-    # 3. Daily summary
-    success.append(_commit_file(
-        "data/daily.csv",
-        _build_daily_csv().encode("utf-8"),
-        f"Data update {ts}",
-    ))
-
-    # 4. Monthly archive (current month)
     month = datetime.now(timezone.utc).strftime("%Y-%m")
-    success.append(_commit_file(
-        f"data/archive/rates-{month}.csv",
-        _build_archive_csv(month).encode("utf-8"),
-        f"Data update {ts}",
-    ))
 
-    # 5. README (only commit if not already there — minor optimization)
-    success.append(_commit_file(
-        "data/README.md",
-        _build_readme().encode("utf-8"),
-        f"Documentation update {ts}",
-    ))
-
-    ok_count = sum(1 for s in success if s)
-    logger.info(f"GitHub export: {ok_count}/{len(success)} files committed")
-    return ok_count > 0
+    # All data files in ONE atomic commit. commit_files skips entirely if
+    # nothing changed, so a static 30-min window produces zero commits.
+    files = [
+        ("data/current.json", _build_current_json().encode("utf-8")),
+        ("data/recent.csv", _build_recent_csv().encode("utf-8")),
+        ("data/daily.csv", _build_daily_csv().encode("utf-8")),
+        (f"data/archive/rates-{month}.csv", _build_archive_csv(month).encode("utf-8")),
+        ("data/README.md", _build_readme().encode("utf-8")),
+    ]
+    return _commit_files(files, f"Data update {ts}")
 
 
 def export_dashboard_to_github() -> bool:
@@ -408,26 +379,26 @@ def export_dashboard_to_github() -> bool:
     import gc
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    # Textual dashboard first — cheap, no matplotlib. These must NOT depend on
-    # chart rendering succeeding; a matplotlib failure should never freeze the
-    # README / forecast / accuracy data that the public repo homepage shows.
-    _commit_file("data/forecast.json", _build_forecast_json().encode("utf-8"), f"Dashboard update {ts}")
-    _commit_file("data/accuracy.json", _build_accuracy_json().encode("utf-8"), f"Dashboard update {ts}")
-    _commit_file("README.md", _build_root_readme().encode("utf-8"), f"Dashboard update {ts}")
+    # Textual dashboard — cheap, no matplotlib. Always part of the batch so a
+    # matplotlib failure can never freeze the public README / forecast data.
+    files = [
+        ("data/forecast.json", _build_forecast_json().encode("utf-8")),
+        ("data/accuracy.json", _build_accuracy_json().encode("utf-8")),
+        ("README.md", _build_root_readme().encode("utf-8")),
+    ]
 
-    # Chart last — heavy (matplotlib) and best-effort. Failure here is logged
-    # but does not undo the dashboard commits above.
+    # Chart — heavy and best-effort. If it renders, it joins the SAME commit;
+    # if it fails, the text files still commit (one commit either way).
     from reports.chart_generator import generate_chart  # deferred — matplotlib is heavy
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp_path = f.name
-        if not generate_chart(tmp_path, days=30):
-            logger.warning("Chart generation returned False — dashboard text still committed")
-            return True
-        with open(tmp_path, "rb") as f:
-            chart_bytes = f.read()
-        _commit_file("data/chart.png", chart_bytes, f"Chart update {ts}")
+        if generate_chart(tmp_path, days=30):
+            with open(tmp_path, "rb") as f:
+                files.append(("data/chart.png", f.read()))
+        else:
+            logger.warning("Chart generation returned False — committing dashboard text only")
     except Exception as e:
         logger.error(f"Chart generation failed: {e}")
     finally:
@@ -437,4 +408,5 @@ def export_dashboard_to_github() -> bool:
             except OSError:
                 pass
         gc.collect()
-    return True
+
+    return _commit_files(files, f"Dashboard update {ts}")
