@@ -113,12 +113,15 @@ def _build_current_json() -> str:
 _DIRECTION_SYMBOL = {"widen": "↑", "stable": "→", "narrow": "↓"}
 _DIRECTION_ES = {"widen": "Ensanchando", "stable": "Estable", "narrow": "Estrechando"}
 _DIRECTION_EN = {"widen": "Widening", "stable": "Stable", "narrow": "Narrowing"}
-_MODEL_ORDER = ["naive", "stat", "stat_v2", "stat_v3"]
+_MODEL_ORDER = ["naive", "stat", "stat_v2", "stat_v3", "momentum", "markov", "ensemble"]
 _MODEL_LABELS = {
     "naive": "naive (baseline)",
     "stat": "stat",
     "stat_v2": "stat\\_v2 (oil + news · petróleo + noticias)",
     "stat_v3": "stat\\_v3 (+ payday · quincena)",
+    "momentum": "momentum (trend · tendencia)",
+    "markov": "markov (regime · régimen)",
+    "ensemble": "**ensemble (blend · combinación)**",
 }
 
 
@@ -149,7 +152,10 @@ def _build_forecast_json() -> str:
                 "direction": direction,
                 "confidence_pct": round(probs[direction] * 100, 1),
             }
-    directions = [v["direction"] for k, v in forecasts.items() if k != "naive"]
+    # Exclude naive (no situational info) and ensemble (already a blend of the
+    # others — counting it would double-weight its members) from the vote.
+    directions = [v["direction"] for k, v in forecasts.items()
+                  if k not in ("naive", "ensemble")]
     consensus = max(set(directions), key=directions.count) if directions else None
     return json.dumps({
         "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
@@ -209,7 +215,7 @@ def _build_root_readme() -> str:
         p2p_str = "—"
 
     forecast_str = "—"
-    for preferred in ("stat_v2", "stat", "naive"):
+    for preferred in ("ensemble", "stat_v3", "stat_v2", "stat", "naive"):
         s = _forecast_direction_display(preferred)
         if s != "—":
             forecast_str = s
@@ -263,9 +269,9 @@ def _build_root_readme() -> str:
 
 ## Live Accuracy Track Record · Historial de Precisión en Vivo
 
-Every day, four models compete. Each prediction is scored against the actual outcome using **Brier score** — a standard probabilistic accuracy metric where lower is better, a random guess scores 0.667, and a perfect forecaster scores 0.000. Any model that fails to beat the naive baseline gets rejected.
+Every day, several models with deliberately different assumptions compete — a base-rate baseline, kernel-analog models on oil/news/payday signals, a trend-follower, and a regime-transition model. A diversified **ensemble** then blends them. The blend is reliable for a precise reason: its error equals the average member's error *minus how much the members disagree*, so combining models that fail in different situations scores better than any one alone. Each prediction is scored against the actual outcome using **Brier score** — lower is better, a random guess scores 0.667, a perfect forecaster 0.000. Any model that fails to beat the naive baseline gets rejected.
 
-Cada día, cuatro modelos compiten. Cada predicción se puntúa con **Brier score** — una métrica estándar donde menor es mejor, un pronóstico aleatorio puntúa 0.667 y uno perfecto puntúa 0.000. Cualquier modelo que no supere la línea base se descarta.
+Cada día compiten varios modelos con supuestos deliberadamente distintos — una línea base, modelos de analogía sobre señales de petróleo/noticias/quincena, un seguidor de tendencia y un modelo de transición de régimen. Un **ensemble** diversificado los combina. La combinación es fiable por una razón precisa: su error es igual al error promedio de los miembros *menos cuánto difieren entre sí*, así que combinar modelos que fallan en situaciones distintas puntúa mejor que cualquiera por separado. Cada predicción se puntúa con **Brier score** — menor es mejor, aleatorio 0.667, perfecto 0.000. Cualquier modelo que no supere la línea base se descarta.
 
 | Model · Modelo | Brier ↓ | vs Baseline | Forecasts Scored · Evaluados |
 |---|---|---|---|

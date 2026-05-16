@@ -325,8 +325,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "models",
         nargs="*",
-        default=["naive", "stat", "stat_v2", "stat_v3"],
-        help="Models to backtest (default: all four). Choices: naive, stat, stat_v2, stat_v3.",
+        default=["naive", "stat", "stat_v2", "stat_v3", "momentum", "markov", "ensemble"],
+        help="Models to backtest (default: all). Choices: naive, stat, stat_v2, "
+             "stat_v3, momentum, markov, ensemble.",
     )
     parser.add_argument("--db", default=default_db, help=f"DB path (default: {default_db})")
     args = parser.parse_args()
@@ -354,6 +355,21 @@ if __name__ == "__main__":
     try:
         from analysis.forecasters.stat_v3 import StatV3Forecaster
         forecaster_classes["stat_v3"] = StatV3Forecaster
+    except ImportError:
+        pass
+    try:
+        from analysis.forecasters.momentum import MomentumForecaster
+        forecaster_classes["momentum"] = MomentumForecaster
+    except ImportError:
+        pass
+    try:
+        from analysis.forecasters.markov import MarkovForecaster
+        forecaster_classes["markov"] = MarkovForecaster
+    except ImportError:
+        pass
+    try:
+        from analysis.forecasters.ensemble import EnsembleForecaster
+        forecaster_classes["ensemble"] = EnsembleForecaster
     except ImportError:
         pass
 

@@ -13,6 +13,9 @@ from analysis.forecasters.naive import NaiveForecaster
 from analysis.forecasters.stat import StatForecaster
 from analysis.forecasters.stat_v2 import StatV2Forecaster
 from analysis.forecasters.stat_v3 import StatV3Forecaster
+from analysis.forecasters.momentum import MomentumForecaster
+from analysis.forecasters.markov import MarkovForecaster
+from analysis.forecasters.ensemble import EnsembleForecaster
 from analysis.forecasters.enrich import enrich_history
 from analysis.forecasters.backtest import score_pending_live
 
@@ -41,7 +44,15 @@ def _load_history(lookback_days: int) -> list[dict]:
         conn.close()
 
 
-DEFAULT_FORECASTERS = (NaiveForecaster, StatForecaster, StatV2Forecaster, StatV3Forecaster)
+DEFAULT_FORECASTERS = (
+    NaiveForecaster,
+    StatForecaster,
+    StatV2Forecaster,
+    StatV3Forecaster,
+    MomentumForecaster,
+    MarkovForecaster,
+    EnsembleForecaster,
+)
 
 
 def _run_one(forecaster, history: list[dict], made_at: str, target_at: str,

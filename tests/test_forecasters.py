@@ -11,6 +11,9 @@ from analysis.forecasters.naive import NaiveForecaster
 from analysis.forecasters.stat import StatForecaster
 from analysis.forecasters.stat_v2 import StatV2Forecaster
 from analysis.forecasters.stat_v3 import StatV3Forecaster
+from analysis.forecasters.momentum import MomentumForecaster
+from analysis.forecasters.markov import MarkovForecaster
+from analysis.forecasters.ensemble import EnsembleForecaster
 from analysis.forecasters.payday import payday_features
 
 
@@ -155,6 +158,130 @@ class TestStatV3Forecaster:
         history = _make_history(60, enriched=True)
         assert _is_valid_probs(StatV2Forecaster().forecast(history))
         assert _is_valid_probs(StatV3Forecaster().forecast(history))
+
+
+# ---------------------------------------------------------------------------
+# MomentumForecaster
+# ---------------------------------------------------------------------------
+
+class TestMomentumForecaster:
+    def test_valid_probs_on_normal_history(self):
+        p = MomentumForecaster().forecast(_make_history(60))
+        assert _is_valid_probs(p)
+
+    def test_empty_history_returns_uniform(self):
+        assert MomentumForecaster().forecast([]) == uniform()
+
+    def test_too_few_points_returns_uniform(self):
+        assert MomentumForecaster().forecast(_make_history(4)) == uniform()
+
+    def test_strong_uptrend_favours_widen(self):
+        # +0.5pp per 6h → +2pp per 24h, well past the +1pp band
+        p = MomentumForecaster().forecast(_make_history(60, trend_pp=0.5))
+        assert p["widen"] > p["stable"]
+        assert p["widen"] > p["narrow"]
+
+    def test_strong_downtrend_favours_narrow(self):
+        p = MomentumForecaster().forecast(_make_history(60, trend_pp=-0.5))
+        assert p["narrow"] > p["stable"]
+        assert p["narrow"] > p["widen"]
+
+    def test_flat_favours_stable(self):
+        p = MomentumForecaster().forecast(_make_history(60, trend_pp=0.0))
+        assert p["stable"] > p["widen"]
+        assert p["stable"] > p["narrow"]
+
+    def test_missing_spread_returns_uniform(self):
+        rows = _make_history(60)
+        for r in rows:
+            r["spread_pct"] = None
+        assert MomentumForecaster().forecast(rows) == uniform()
+
+
+# ---------------------------------------------------------------------------
+# MarkovForecaster
+# ---------------------------------------------------------------------------
+
+class TestMarkovForecaster:
+    def test_valid_probs_on_normal_history(self):
+        p = MarkovForecaster().forecast(_make_history(60))
+        assert _is_valid_probs(p)
+
+    def test_empty_history_returns_uniform(self):
+        assert MarkovForecaster().forecast([]) == uniform()
+
+    def test_single_reading_returns_uniform(self):
+        assert MarkovForecaster().forecast(_make_history(1)) == uniform()
+
+    def test_persistent_uptrend_favours_widen(self):
+        # Every 24h move is widen → widen→widen transition dominates,
+        # current state is widen → forecast favours widen
+        p = MarkovForecaster().forecast(_make_history(60, trend_pp=0.5))
+        assert p["widen"] > p["narrow"]
+
+    def test_flat_favours_stable(self):
+        p = MarkovForecaster().forecast(_make_history(60, trend_pp=0.0))
+        assert p["stable"] > p["widen"]
+        assert p["stable"] > p["narrow"]
+
+
+# ---------------------------------------------------------------------------
+# EnsembleForecaster
+# ---------------------------------------------------------------------------
+
+class _FixedForecaster:
+    """Test double: always returns the same probs."""
+    def __init__(self, name, probs):
+        self.name = name
+        self._probs = probs
+
+    def forecast(self, history):
+        return dict(self._probs)
+
+
+class _BrokenForecaster:
+    name = "broken"
+
+    def forecast(self, history):
+        raise RuntimeError("boom")
+
+
+class TestEnsembleForecaster:
+    def test_valid_probs_with_enriched_history(self):
+        p = EnsembleForecaster().forecast(_make_history(60, enriched=True))
+        assert _is_valid_probs(p)
+
+    def test_valid_probs_without_enrichment(self):
+        # stat_v3 member falls back to uniform when unenriched; pool still valid
+        p = EnsembleForecaster().forecast(_make_history(60, enriched=False))
+        assert _is_valid_probs(p)
+
+    def test_empty_members_returns_uniform(self):
+        assert EnsembleForecaster(members=[]).forecast(_make_history(60)) == uniform()
+
+    def test_equal_weight_pool_is_the_mean(self):
+        m1 = _FixedForecaster("a", {"widen": 1.0, "stable": 0.0, "narrow": 0.0})
+        m2 = _FixedForecaster("b", {"widen": 0.0, "stable": 1.0, "narrow": 0.0})
+        p = EnsembleForecaster(members=[m1, m2]).forecast([])
+        assert p["widen"] == pytest.approx(0.5)
+        assert p["stable"] == pytest.approx(0.5)
+        assert p["narrow"] == pytest.approx(0.0)
+
+    def test_custom_weights_are_normalized(self):
+        m1 = _FixedForecaster("a", {"widen": 1.0, "stable": 0.0, "narrow": 0.0})
+        m2 = _FixedForecaster("b", {"widen": 0.0, "stable": 1.0, "narrow": 0.0})
+        p = EnsembleForecaster(members=[m1, m2], weights=[3, 1]).forecast([])
+        assert p["widen"] == pytest.approx(0.75)
+        assert p["stable"] == pytest.approx(0.25)
+
+    def test_broken_member_is_dropped(self):
+        good = _FixedForecaster("g", {"widen": 0.2, "stable": 0.5, "narrow": 0.3})
+        p = EnsembleForecaster(members=[good, _BrokenForecaster()]).forecast([])
+        assert p == pytest.approx(good.forecast([]))
+
+    def test_all_members_broken_returns_uniform(self):
+        p = EnsembleForecaster(members=[_BrokenForecaster(), _BrokenForecaster()]).forecast([])
+        assert p == uniform()
 
 
 # ---------------------------------------------------------------------------
