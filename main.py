@@ -308,9 +308,17 @@ def run_chart_export():
 
 def run_daily_forecast():
     try:
-        make_daily_forecast()
+        ids = make_daily_forecast()
     except Exception as e:
         logger.exception(f"Daily forecast error: {e}")
+        return
+    if ids:
+        # Republish immediately so the public dashboard reflects the new
+        # forecast now, rather than waiting up to 2h for run_chart_export.
+        try:
+            export_dashboard_to_github()
+        except Exception as e:
+            logger.exception(f"Dashboard republish after forecast failed: {e}")
 
 
 def run_score_forecasts():
