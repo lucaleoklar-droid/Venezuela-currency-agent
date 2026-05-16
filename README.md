@@ -13,8 +13,8 @@
 | BCV Oficial | **517.96** VES/USD |
 | Paralelo | **694.52** VES/USD |
 | Brecha · Spread | **34.1%** |
-| Binance P2P USDT/VES | **695.70** VES/USDT (+0.2% vs paralelo) |
-| **Pronóstico 24h · 24h Forecast** | **→ Estable · Stable (37%)** |
+| Binance P2P USDT/VES | **694.91** VES/USDT (+0.1% vs paralelo) |
+| **Pronóstico 24h · 24h Forecast** | **↑ Ensanchando · Widening (33%)** |
 | Actualizado · Updated | 2026-05-16 21:16 UTC |
 
 ![Venezuela BCV vs parallel rate — last 30 days](data/chart.png)
@@ -23,9 +23,9 @@
 
 ## Live Accuracy Track Record · Historial de Precisión en Vivo
 
-Every day, four models compete. Each prediction is scored against the actual outcome using **Brier score** — a standard probabilistic accuracy metric where lower is better, a random guess scores 0.667, and a perfect forecaster scores 0.000. Any model that fails to beat the naive baseline gets rejected.
+Every day, several models with deliberately different assumptions compete — a base-rate baseline, kernel-analog models on oil/news/payday signals, a trend-follower, and a regime-transition model. A diversified **ensemble** then blends them. The blend is reliable for a precise reason: its error equals the average member's error *minus how much the members disagree*, so combining models that fail in different situations scores better than any one alone. Each prediction is scored against the actual outcome using **Brier score** — lower is better, a random guess scores 0.667, a perfect forecaster 0.000. Any model that fails to beat the naive baseline gets rejected.
 
-Cada día, cuatro modelos compiten. Cada predicción se puntúa con **Brier score** — una métrica estándar donde menor es mejor, un pronóstico aleatorio puntúa 0.667 y uno perfecto puntúa 0.000. Cualquier modelo que no supere la línea base se descarta.
+Cada día compiten varios modelos con supuestos deliberadamente distintos — una línea base, modelos de analogía sobre señales de petróleo/noticias/quincena, un seguidor de tendencia y un modelo de transición de régimen. Un **ensemble** diversificado los combina. La combinación es fiable por una razón precisa: su error es igual al error promedio de los miembros *menos cuánto difieren entre sí*, así que combinar modelos que fallan en situaciones distintas puntúa mejor que cualquiera por separado. Cada predicción se puntúa con **Brier score** — menor es mejor, aleatorio 0.667, perfecto 0.000. Cualquier modelo que no supere la línea base se descarta.
 
 | Model · Modelo | Brier ↓ | vs Baseline | Forecasts Scored · Evaluados |
 |---|---|---|---|
@@ -33,6 +33,9 @@ Cada día, cuatro modelos compiten. Cada predicción se puntúa con **Brier scor
 | stat | 0.6667 | −0.1073 ✓ | 2 |
 | stat\_v2 (oil + news · petróleo + noticias) | 0.6667 | −0.1073 ✓ | 1 |
 | stat\_v3 (+ payday · quincena) | 0.6667 | −0.1073 ✓ | 1 |
+| momentum (trend · tendencia) | — | — | 0 |
+| markov (regime · régimen) | — | — | 0 |
+| **ensemble (blend · combinación)** | — | — | 0 |
 
 *Accumulating live data since May 2026 · Acumulando datos en vivo desde mayo 2026*
 
