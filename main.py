@@ -647,7 +647,15 @@ def main():
 
     clear_stale_alerts()
 
-    if attempt_age is None or attempt_age > 25:
+    # Liveness server + telegram poller come up FIRST, before any heavy startup
+    # work, so Railway's healthcheck always gets a 200 within seconds. If a slow
+    # blocking task (chart export, scrape) runs before the health endpoint binds,
+    # the healthcheck times out, Railway kills the container, and it restart-loops.
+    start_liveness_server()
+    start_telegram_thread()
+
+    in_restart_loop = not (attempt_age is None or attempt_age > 25)
+    if not in_restart_loop:
         logger.info("Startup scrape: running catch-up")
         scrape_and_store()
     else:
@@ -658,9 +666,15 @@ def main():
         except Exception as e:
             logger.exception(f"Startup alert flush error: {e}")
 
-    run_chart_export()
-    start_telegram_thread()
-    start_liveness_server()
+    # Startup dashboard refresh: skip entirely on a restart-loop iteration (an
+    # unguarded startup chart export is what turned restarts into GitHub commit
+    # spam — 4 commits per restart), and always run off the main thread so a slow
+    # matplotlib render + 4 GitHub commits can never block scheduler startup.
+    if not in_restart_loop:
+        threading.Thread(target=run_chart_export, daemon=True, name="startup-chart-export").start()
+    else:
+        logger.info("Startup chart export skipped — restart-loop guard")
+
     scheduler = BackgroundScheduler(timezone="UTC")
     setup_schedule(scheduler)
     scheduler.start()

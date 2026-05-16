@@ -13,7 +13,7 @@ from reports.github_publisher import commit_file as _commit_file
 # matplotlib (~100MB RAM). main.py imports this module on startup, so a
 # top-level import would load matplotlib into every Railway restart even
 # though the chart only generates every 2h. Suspected OOM root cause of
-# the restart loop. Import is deferred to inside export_chart_to_github.
+# the restart loop. Import is deferred to inside export_dashboard_to_github.
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -406,20 +406,30 @@ def export_dashboard_to_github() -> bool:
     if not os.getenv("GITHUB_TOKEN") or not os.getenv("GITHUB_REPO"):
         return False
     import gc
-    from reports.chart_generator import generate_chart  # deferred — matplotlib is heavy
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Textual dashboard first — cheap, no matplotlib. These must NOT depend on
+    # chart rendering succeeding; a matplotlib failure should never freeze the
+    # README / forecast / accuracy data that the public repo homepage shows.
+    _commit_file("data/forecast.json", _build_forecast_json().encode("utf-8"), f"Dashboard update {ts}")
+    _commit_file("data/accuracy.json", _build_accuracy_json().encode("utf-8"), f"Dashboard update {ts}")
+    _commit_file("README.md", _build_root_readme().encode("utf-8"), f"Dashboard update {ts}")
+
+    # Chart last — heavy (matplotlib) and best-effort. Failure here is logged
+    # but does not undo the dashboard commits above.
+    from reports.chart_generator import generate_chart  # deferred — matplotlib is heavy
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp_path = f.name
         if not generate_chart(tmp_path, days=30):
-            return False
+            logger.warning("Chart generation returned False — dashboard text still committed")
+            return True
         with open(tmp_path, "rb") as f:
             chart_bytes = f.read()
         _commit_file("data/chart.png", chart_bytes, f"Chart update {ts}")
     except Exception as e:
         logger.error(f"Chart generation failed: {e}")
-        return False
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -427,9 +437,4 @@ def export_dashboard_to_github() -> bool:
             except OSError:
                 pass
         gc.collect()
-
-    # Dashboard files — commit unconditionally so README/forecasts are always current
-    _commit_file("data/forecast.json", _build_forecast_json().encode("utf-8"), f"Dashboard update {ts}")
-    _commit_file("data/accuracy.json", _build_accuracy_json().encode("utf-8"), f"Dashboard update {ts}")
-    _commit_file("README.md", _build_root_readme().encode("utf-8"), f"Dashboard update {ts}")
     return True
