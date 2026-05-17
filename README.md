@@ -13,7 +13,7 @@
 | BCV Oficial | **517.96** VES/USD |
 | Paralelo | **694.18** VES/USD |
 | Brecha · Spread | **34.0%** |
-| Binance P2P USDT/VES | **695.65** VES/USDT (+0.2% vs paralelo) |
+| Binance P2P USDT/VES | **695.38** VES/USDT (+0.2% vs paralelo) |
 | **Pronóstico 24h · 24h Forecast** | **↑ Ensanchando · Widening (33%)** |
 | Actualizado · Updated | 2026-05-17 04:21 UTC |
 
