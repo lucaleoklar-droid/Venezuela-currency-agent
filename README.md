@@ -11,11 +11,11 @@
 | Metric · Métrica | Value · Valor |
 |---|---|
 | BCV Oficial | **520.91** VES/USD |
-| Paralelo | **694.51** VES/USD |
-| Brecha · Spread | **33.3%** |
-| Binance P2P USDT/VES | **696.35** VES/USDT (+0.3% vs paralelo) |
+| Paralelo | **692.54** VES/USD |
+| Brecha · Spread | **33.0%** |
+| Binance P2P USDT/VES | **696.35** VES/USDT (+0.6% vs paralelo) |
 | **Pronóstico 24h · 24h Forecast** | **→ Estable · Stable (37%)** |
-| Actualizado · Updated | 2026-05-20 04:16 UTC |
+| Actualizado · Updated | 2026-05-20 12:35 UTC |
 
 ![Venezuela BCV vs parallel rate — last 30 days](data/chart.png)
 
