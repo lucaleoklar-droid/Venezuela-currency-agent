@@ -1,8 +1,8 @@
 {
-  "timestamp_utc": "2026-05-21T21:08:19.702352",
-  "bcv_rate": 523.675,
+  "timestamp_utc": "2026-05-21T22:10:22.070619",
+  "bcv_rate": 526.8694,
   "parallel_rate": 711.575,
-  "spread_pct": 35.88,
+  "spread_pct": 35.06,
   "source": "ve.dolarapi.com",
   "binance_p2p": {
     "timestamp_utc": "2026-05-21T19:35:58.019313",
