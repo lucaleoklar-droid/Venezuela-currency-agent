@@ -1,14 +1,14 @@
 {
-  "timestamp_utc": "2026-05-25T04:07:03.675916",
+  "timestamp_utc": "2026-05-25T12:31:08.716246",
   "bcv_rate": 530.5047,
-  "parallel_rate": 714.5345,
-  "spread_pct": 34.69,
+  "parallel_rate": 709.5115,
+  "spread_pct": 33.74,
   "source": "ve.dolarapi.com",
   "binance_p2p": {
-    "timestamp_utc": "2026-05-25T04:07:04.613658",
-    "mid_price_ves_per_usdt": 716.62,
-    "best_bid": 715.25,
-    "best_ask": 718.0,
-    "bid_ask_spread_pct": 0.384
+    "timestamp_utc": "2026-05-25T12:31:09.603706",
+    "mid_price_ves_per_usdt": 710.85,
+    "best_bid": 709.71,
+    "best_ask": 711.99,
+    "bid_ask_spread_pct": 0.321
   }
 }
