@@ -1,7 +1,7 @@
 {
-  "updated_at": "2026-05-26T12:56:10.819794",
+  "updated_at": "2026-05-26T23:44:22.965107",
   "horizon_hours": 24,
-  "consensus_direction": "widen",
+  "consensus_direction": "stable",
   "models": {
     "naive": {
       "made_at": "2026-05-26T10:55:00.009251",
