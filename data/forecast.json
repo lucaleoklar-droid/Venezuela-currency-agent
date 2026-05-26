@@ -1,70 +1,70 @@
 {
-  "updated_at": "2026-05-26T09:01:38.310250",
+  "updated_at": "2026-05-26T10:55:00.099865",
   "horizon_hours": 24,
-  "consensus_direction": "stable",
+  "consensus_direction": "widen",
   "models": {
     "naive": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
       "p_widen": 0.3333,
-      "p_stable": 0.4615,
-      "p_narrow": 0.2051,
+      "p_stable": 0.4524,
+      "p_narrow": 0.2143,
       "direction": "stable",
-      "confidence_pct": 46.2
+      "confidence_pct": 45.2
     },
     "stat": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
-      "p_widen": 0.3435,
-      "p_stable": 0.437,
-      "p_narrow": 0.2195,
-      "direction": "stable",
-      "confidence_pct": 43.7
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
+      "p_widen": 0.3506,
+      "p_stable": 0.3458,
+      "p_narrow": 0.3035,
+      "direction": "widen",
+      "confidence_pct": 35.1
     },
     "stat_v2": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
-      "p_widen": 0.2877,
-      "p_stable": 0.4085,
-      "p_narrow": 0.3038,
-      "direction": "stable",
-      "confidence_pct": 40.9
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
+      "p_widen": 0.2464,
+      "p_stable": 0.3628,
+      "p_narrow": 0.3908,
+      "direction": "narrow",
+      "confidence_pct": 39.1
     },
     "stat_v3": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
-      "p_widen": 0.2797,
-      "p_stable": 0.4261,
-      "p_narrow": 0.2943,
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
+      "p_widen": 0.246,
+      "p_stable": 0.3784,
+      "p_narrow": 0.3755,
       "direction": "stable",
-      "confidence_pct": 42.6
+      "confidence_pct": 37.8
     },
     "momentum": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
-      "p_widen": 0.3288,
-      "p_stable": 0.411,
-      "p_narrow": 0.2602,
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
+      "p_widen": 0.3068,
+      "p_stable": 0.4176,
+      "p_narrow": 0.2756,
       "direction": "stable",
-      "confidence_pct": 41.1
+      "confidence_pct": 41.8
     },
     "markov": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
-      "p_widen": 0.2222,
-      "p_stable": 0.2222,
-      "p_narrow": 0.5556,
-      "direction": "narrow",
-      "confidence_pct": 55.6
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
+      "p_widen": 0.5333,
+      "p_stable": 0.3333,
+      "p_narrow": 0.1333,
+      "direction": "widen",
+      "confidence_pct": 53.3
     },
     "ensemble": {
-      "made_at": "2026-05-25T10:55:00.010077",
-      "target_at": "2026-05-26T10:55:00.010077",
-      "p_widen": 0.291,
-      "p_stable": 0.3802,
-      "p_narrow": 0.3288,
+      "made_at": "2026-05-26T10:55:00.009251",
+      "target_at": "2026-05-27T10:55:00.009251",
+      "p_widen": 0.3549,
+      "p_stable": 0.3954,
+      "p_narrow": 0.2497,
       "direction": "stable",
-      "confidence_pct": 38.0
+      "confidence_pct": 39.5
     }
   }
 }
