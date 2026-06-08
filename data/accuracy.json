@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-08T00:26:53.106401",
+  "updated_at": "2026-06-08T02:26:53.115330",
   "note": "Lower Brier is better. Random=0.667, Perfect=0.000. 30+ scored forecasts needed for significance.",
   "models": {
     "naive": {
