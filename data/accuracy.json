@@ -1,41 +1,41 @@
 {
-  "updated_at": "2026-06-10T12:26:53.107289",
+  "updated_at": "2026-06-10T14:26:53.114261",
   "note": "Lower Brier is better. Random=0.667, Perfect=0.000. 30+ scored forecasts needed for significance.",
   "models": {
     "naive": {
-      "mean_brier": 0.6899,
-      "n_scored": 24,
+      "mean_brier": 0.6974,
+      "n_scored": 25,
       "vs_naive": null
     },
     "stat": {
-      "mean_brier": 0.6801,
-      "n_scored": 24,
-      "vs_naive": -0.0098
+      "mean_brier": 0.6847,
+      "n_scored": 25,
+      "vs_naive": -0.0127
     },
     "stat_v2": {
-      "mean_brier": 0.7083,
-      "n_scored": 23,
-      "vs_naive": 0.0184
+      "mean_brier": 0.7167,
+      "n_scored": 24,
+      "vs_naive": 0.0193
     },
     "stat_v3": {
-      "mean_brier": 0.7078,
-      "n_scored": 23,
-      "vs_naive": 0.0179
+      "mean_brier": 0.717,
+      "n_scored": 24,
+      "vs_naive": 0.0196
     },
     "momentum": {
-      "mean_brier": 0.7621,
-      "n_scored": 21,
-      "vs_naive": 0.0722
+      "mean_brier": 0.7603,
+      "n_scored": 22,
+      "vs_naive": 0.0629
     },
     "markov": {
-      "mean_brier": 0.7924,
-      "n_scored": 21,
-      "vs_naive": 0.1024
+      "mean_brier": 0.807,
+      "n_scored": 22,
+      "vs_naive": 0.1096
     },
     "ensemble": {
-      "mean_brier": 0.718,
-      "n_scored": 21,
-      "vs_naive": 0.0281
+      "mean_brier": 0.7251,
+      "n_scored": 22,
+      "vs_naive": 0.0277
     }
   }
 }
