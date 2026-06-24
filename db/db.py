@@ -177,6 +177,12 @@ def init_db():
             if col not in cols:
                 conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} REAL")
 
+        # forecasts.abandoned: ISO ts when a forecast was permanently given up on
+        # (target had no scorable reading). NULL = still in the scoring queue.
+        fcols = [r["name"] for r in conn.execute("PRAGMA table_info(forecasts)").fetchall()]
+        if "abandoned" not in fcols:
+            conn.execute("ALTER TABLE forecasts ADD COLUMN abandoned TEXT")
+
 
 def insert_rate(timestamp: str, bcv_rate: float, parallel_rate: float,
                 spread_pct: float, source: str, notes: str = None):
@@ -302,14 +308,36 @@ def insert_forecast_score(forecast_id: int, scored_at: str, spread_at_target: fl
 
 
 def get_unscored_matured_forecasts(now_iso: str) -> list[dict]:
-    """Forecasts whose target_at has passed but have no score yet."""
+    """Forecasts whose target_at has passed, not yet scored, and not abandoned."""
     with db() as conn:
         rows = conn.execute(
             "SELECT f.* FROM forecasts f "
             "LEFT JOIN forecast_scores s ON s.forecast_id = f.id "
-            "WHERE s.id IS NULL AND f.target_at <= ? "
+            "WHERE s.id IS NULL AND f.abandoned IS NULL AND f.target_at <= ? "
             "ORDER BY f.target_at ASC",
             (now_iso,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_forecast_abandoned(forecast_id: int, when_iso: str):
+    """Permanently retire a forecast that can never be scored (no target data).
+    Keeps it out of the scoring sweep without polluting Brier stats."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE forecasts SET abandoned = ? WHERE id = ?",
+            (when_iso, forecast_id)
+        )
+
+
+def get_forecast_scores(model_name: str) -> list[dict]:
+    """Per-forecast scored rows for one model — for CI, significance, calibration."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT f.p_widen, f.p_stable, f.p_narrow, s.brier, s.actual_outcome "
+            "FROM forecast_scores s JOIN forecasts f ON f.id = s.forecast_id "
+            "WHERE f.model_name = ? ORDER BY s.scored_at ASC",
+            (model_name,)
         ).fetchall()
     return [dict(r) for r in rows]
 

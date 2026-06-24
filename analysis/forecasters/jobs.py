@@ -11,11 +11,6 @@ from db.db import get_connection, insert_forecast
 from analysis.forecasters import HORIZON_HOURS
 from analysis.forecasters.naive import NaiveForecaster
 from analysis.forecasters.stat import StatForecaster
-from analysis.forecasters.stat_v2 import StatV2Forecaster
-from analysis.forecasters.stat_v3 import StatV3Forecaster
-from analysis.forecasters.momentum import MomentumForecaster
-from analysis.forecasters.markov import MarkovForecaster
-from analysis.forecasters.ensemble import EnsembleForecaster
 from analysis.forecasters.enrich import enrich_history
 from analysis.forecasters.backtest import score_pending_live
 
@@ -44,14 +39,13 @@ def _load_history(lookback_days: int) -> list[dict]:
         conn.close()
 
 
+# Disciplined to two models (2026-06-24): a benchmark + one challenger. The
+# parked variants (stat_v2/v3, momentum, markov, ensemble) stay in the repo but
+# are no longer generated or scored — at n<40 a six-model zoo just multiplied
+# noise. Re-add one here only once it earns it on out-of-sample Brier.
 DEFAULT_FORECASTERS = (
     NaiveForecaster,
     StatForecaster,
-    StatV2Forecaster,
-    StatV3Forecaster,
-    MomentumForecaster,
-    MarkovForecaster,
-    EnsembleForecaster,
 )
 
 

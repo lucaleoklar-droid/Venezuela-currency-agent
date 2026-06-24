@@ -36,7 +36,18 @@ logger = logging.getLogger(__name__)
 
 MIN_HISTORY = 12
 SAMPLE_GAP_HOURS = 6
-TARGET_TOLERANCE_HOURS = 2
+TARGET_TOLERANCE_HOURS = 2  # legacy; retained for _find_nearest callers
+
+# Scoring-match tolerance. The live agent dedupes unchanged readings (no new row
+# inserted when BCV+parallel are flat), so a target time often has no reading
+# within a tight window even though the spread is perfectly known (it didn't
+# move). We therefore (a) accept the nearest reading within ±SCORE_TOLERANCE_HOURS
+# and (b) fall back to carrying the last reading at/before the target forward up
+# to CARRY_FORWARD_CAP_HOURS. Only when neither exists is a forecast unscorable;
+# after ABANDON_AFTER_HOURS it is retired so it stops re-queuing every sweep.
+SCORE_TOLERANCE_HOURS = 6
+CARRY_FORWARD_CAP_HOURS = 12
+ABANDON_AFTER_HOURS = 48
 
 
 def _parse_ts(s: str) -> datetime:
@@ -82,6 +93,33 @@ def _find_nearest(rates: list[dict], target_dt: datetime,
         elif parsed_ts[j] > target_dt + tolerance:
             break
     return best_idx
+
+
+def _find_target_reading(rates: list[dict], target_dt: datetime,
+                         parsed_ts: list[datetime], start_idx: int = 0) -> int | None:
+    """Match a 24h target time to an actual reading.
+
+    Prefers the nearest reading within ±SCORE_TOLERANCE_HOURS. If none exists
+    (a deduped quiet period), carries the last reading at/before the target
+    forward, provided it is within CARRY_FORWARD_CAP_HOURS — a flat spread that
+    produced no new row IS the value at target. Returns None if neither applies.
+    """
+    tol = timedelta(hours=SCORE_TOLERANCE_HOURS)
+    carry = timedelta(hours=CARRY_FORWARD_CAP_HOURS)
+    nearest_idx = None
+    nearest_delta = None
+    carry_idx = None
+    for j in range(start_idx, len(rates)):
+        tj = parsed_ts[j]
+        if tj <= target_dt and (target_dt - tj) <= carry:
+            carry_idx = j  # ascending order -> keeps the latest qualifying reading
+        delta = abs(tj - target_dt)
+        if delta <= tol and (nearest_delta is None or delta < nearest_delta):
+            nearest_delta = delta
+            nearest_idx = j
+        if tj > target_dt + tol:
+            break
+    return nearest_idx if nearest_idx is not None else carry_idx
 
 
 def backtest(forecaster, db_path: str | None = None, persist: bool = False) -> dict:
@@ -130,7 +168,7 @@ def backtest(forecaster, db_path: str | None = None, persist: bool = False) -> d
             continue
 
         target_dt = t_dt + horizon
-        target_idx = _find_nearest(rates, target_dt, parsed_ts, i + 1, tol)
+        target_idx = _find_target_reading(rates, target_dt, parsed_ts, i + 1)
         if target_idx is None:
             continue
 
@@ -221,6 +259,7 @@ def score_pending_live(now: datetime | None = None) -> int:
         DB_PATH,
         get_unscored_matured_forecasts,
         insert_forecast_score,
+        mark_forecast_abandoned,
     )
 
     if now is None:
@@ -237,19 +276,19 @@ def score_pending_live(now: datetime | None = None) -> int:
         return 0
 
     parsed_ts = [_parse_ts(r["timestamp"]) for r in rates]
-    tol = timedelta(hours=TARGET_TOLERANCE_HOURS)
     scored = 0
 
     for f in pending:
         target_dt = _parse_ts(f["target_at"])
-        idx = _find_nearest(rates, target_dt, parsed_ts, 0, tol)
+        idx = _find_target_reading(rates, target_dt, parsed_ts, 0)
         if idx is None:
-            # If forecast is severely overdue (>24h past target) with no data, log and skip.
-            if now - target_dt > timedelta(hours=24):
-                logger.warning(
-                    "Forecast id=%s target_at=%s has no rate data within tolerance; "
-                    "leaving unscored (>24h overdue).",
-                    f.get("id"), f["target_at"],
+            # No scorable reading. Once well past the target, retire it permanently
+            # so it stops re-queuing (and spamming logs) every hourly sweep.
+            if now - target_dt > timedelta(hours=ABANDON_AFTER_HOURS):
+                mark_forecast_abandoned(f["id"], now_iso)
+                logger.info(
+                    "Forecast id=%s abandoned: no rate data near target %s (>%dh overdue).",
+                    f.get("id"), f["target_at"], ABANDON_AFTER_HOURS,
                 )
             continue
 

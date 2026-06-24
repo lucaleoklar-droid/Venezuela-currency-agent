@@ -7,7 +7,7 @@ import io
 import tempfile
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from db.db import get_connection, get_latest_forecast, get_forecast_brier_summary
+from db.db import get_connection, get_latest_forecast, get_forecast_scores
 from reports.github_publisher import commit_files as _commit_files
 # NOTE: do NOT import generate_chart here at module level — it imports
 # matplotlib (~100MB RAM). main.py imports this module on startup, so a
@@ -113,7 +113,7 @@ def _build_current_json() -> str:
 _DIRECTION_SYMBOL = {"widen": "↑", "stable": "→", "narrow": "↓"}
 _DIRECTION_ES = {"widen": "Ensanchando", "stable": "Estable", "narrow": "Estrechando"}
 _DIRECTION_EN = {"widen": "Widening", "stable": "Stable", "narrow": "Narrowing"}
-_MODEL_ORDER = ["naive", "stat", "stat_v2", "stat_v3", "momentum", "markov", "ensemble"]
+_MODEL_ORDER = ["naive", "stat"]
 _MODEL_LABELS = {
     "naive": "naive (baseline)",
     "stat": "stat",
@@ -165,27 +165,84 @@ def _build_forecast_json() -> str:
     }, indent=2)
 
 
-def _build_accuracy_json() -> str:
-    rows = get_forecast_brier_summary()
-    by_model = {r["model_name"]: r for r in rows}
-    naive_brier = by_model.get("naive", {}).get("mean_brier")
-    models_out = {}
+_UNIFORM_BRIER = 2 / 3  # always-1/3 baseline for a 3-outcome Brier
+
+
+def _brier_se(briers: list[float]) -> float | None:
+    """Standard error of the mean Brier (sample std / sqrt n). None if n < 2."""
+    n = len(briers)
+    if n < 2:
+        return None
+    mean = sum(briers) / n
+    var = sum((b - mean) ** 2 for b in briers) / (n - 1)
+    return (var ** 0.5) / (n ** 0.5)
+
+
+def _model_stats() -> dict:
+    """Per-model accuracy with honest uncertainty: mean Brier + 95% CI, whether
+    it significantly beats naive and uniform-random, and a calibration snapshot.
+
+    'significant' = the gap exceeds 1.96 standard errors. At small n nearly
+    everything will be non-significant — which is the point: it stops us reading
+    noise as signal."""
+    naive_scores = get_forecast_scores("naive")
+    naive_briers = [s["brier"] for s in naive_scores if s["brier"] is not None]
+    naive_mean = sum(naive_briers) / len(naive_briers) if naive_briers else None
+    naive_se = _brier_se(naive_briers)
+
+    out = {}
     for m in _MODEL_ORDER:
-        d = by_model.get(m, {})
-        brier = d.get("mean_brier")
-        n = int(d["n"]) if d.get("n") else 0
+        scores = get_forecast_scores(m)
+        briers = [s["brier"] for s in scores if s["brier"] is not None]
+        n = len(briers)
+        mean = sum(briers) / n if n else None
+        se = _brier_se(briers)
+        ci95 = round(1.96 * se, 4) if se is not None else None
+
         vs_naive = None
-        if brier is not None and naive_brier is not None and m != "naive":
-            vs_naive = round(brier - naive_brier, 4)
-        models_out[m] = {
-            "mean_brier": round(brier, 4) if brier is not None else None,
+        beats_naive_sig = None
+        if mean is not None and naive_mean is not None and m != "naive":
+            vs_naive = round(mean - naive_mean, 4)
+            if se is not None and naive_se is not None:
+                comb = (se ** 2 + naive_se ** 2) ** 0.5
+                beats_naive_sig = bool(vs_naive < -1.96 * comb)
+
+        vs_uniform = round(mean - _UNIFORM_BRIER, 4) if mean is not None else None
+        beats_uniform_sig = None
+        if mean is not None and se is not None:
+            beats_uniform_sig = bool((_UNIFORM_BRIER - mean) > 1.96 * se)
+
+        calibration = {}
+        if n:
+            for k in ("widen", "stable", "narrow"):
+                pred = sum(s["p_" + k] for s in scores if s["brier"] is not None) / n
+                obs = sum(1 for s in scores if s["actual_outcome"] == k) / n
+                calibration[k] = {"predicted": round(pred, 3), "observed": round(obs, 3)}
+
+        out[m] = {
+            "mean_brier": round(mean, 4) if mean is not None else None,
             "n_scored": n,
+            "brier_ci95": ci95,
             "vs_naive": vs_naive,
+            "beats_naive_significant": beats_naive_sig,
+            "vs_uniform": vs_uniform,
+            "beats_uniform_significant": beats_uniform_sig,
+            "calibration": calibration,
         }
+    return out
+
+
+def _build_accuracy_json() -> str:
     return json.dumps({
         "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
-        "note": "Lower Brier is better. Random=0.667, Perfect=0.000. 30+ scored forecasts needed for significance.",
-        "models": models_out,
+        "note": (
+            "Lower Brier is better. Uniform-random=0.667, perfect=0. brier_ci95 is "
+            "the 95% confidence interval on the mean; 'significant' means the gap "
+            "exceeds 1.96 standard errors. With n<30, treat every gap as provisional "
+            "noise until it stays significant over months. calibration compares each "
+            "model's average predicted probability to the observed frequency per class."
+        ),
+        "models": _model_stats(),
     }, indent=2)
 
 
@@ -215,29 +272,33 @@ def _build_root_readme() -> str:
         p2p_str = "—"
 
     forecast_str = "—"
-    for preferred in ("ensemble", "stat_v3", "stat_v2", "stat", "naive"):
+    for preferred in ("stat", "naive"):
         s = _forecast_direction_display(preferred)
         if s != "—":
             forecast_str = s
             break
 
-    accuracy_rows = get_forecast_brier_summary()
-    by_model = {r["model_name"]: r for r in accuracy_rows}
-    naive_brier = by_model.get("naive", {}).get("mean_brier")
-
+    stats = _model_stats()
     table_lines = []
     for m in _MODEL_ORDER:
         label = _MODEL_LABELS[m]
-        d = by_model.get(m, {})
-        brier = d.get("mean_brier")
-        n = int(d["n"]) if d.get("n") else 0
-        brier_str = f"{brier:.4f}" if brier is not None else "—"
+        st = stats.get(m, {})
+        brier = st.get("mean_brier")
+        ci = st.get("brier_ci95")
+        n = st.get("n_scored", 0)
+        if brier is None:
+            brier_str = "—"
+        elif ci:
+            brier_str = f"{brier:.3f} ± {ci:.3f}"
+        else:
+            brier_str = f"{brier:.3f}"
         if m == "naive":
             vs_str = "—"
-        elif brier is not None and naive_brier is not None:
-            diff = brier - naive_brier
-            sign = "−" if diff < 0 else "+"
-            vs_str = f"{sign}{abs(diff):.4f} {'✓' if diff < 0 else '✗'}"
+        elif st.get("vs_naive") is not None:
+            diff = st["vs_naive"]
+            sig = st.get("beats_naive_significant")
+            mark = "✓" if (diff < 0 and sig) else ("≈" if diff < 0 else "✗")
+            vs_str = f"{'−' if diff < 0 else '+'}{abs(diff):.3f} {mark}"
         else:
             vs_str = "—"
         table_lines.append(f"| {label} | {brier_str} | {vs_str} | {n} |")
@@ -269,9 +330,9 @@ def _build_root_readme() -> str:
 
 ## Live Accuracy Track Record · Historial de Precisión en Vivo
 
-Every day, several models with deliberately different assumptions compete — a base-rate baseline, kernel-analog models on oil/news/payday signals, a trend-follower, and a regime-transition model. A diversified **ensemble** then blends them. The blend is reliable for a precise reason: its error equals the average member's error *minus how much the members disagree*, so combining models that fail in different situations scores better than any one alone. Each prediction is scored against the actual outcome using **Brier score** — lower is better, a random guess scores 0.667, a perfect forecaster 0.000. Any model that fails to beat the naive baseline gets rejected.
+Every day two models compete on the same forecast: a **naive base-rate benchmark** (what usually happens) and a **stat challenger** (kernel-weighted analogs over recent spread dynamics plus oil, news, and payday-cycle signals). Each prediction is scored against the actual 24h outcome with the **Brier score** — lower is better; a random guess scores 0.667, a perfect forecaster 0.000. Scores are shown with a 95% confidence interval, and the challenger only counts as beating the baseline once the gap is statistically significant (✓; ≈ means ahead but not yet significant). Honest status: with only a few dozen scored forecasts so far, gaps this small are provisional — we report the uncertainty instead of hiding it.
 
-Cada día compiten varios modelos con supuestos deliberadamente distintos — una línea base, modelos de analogía sobre señales de petróleo/noticias/quincena, un seguidor de tendencia y un modelo de transición de régimen. Un **ensemble** diversificado los combina. La combinación es fiable por una razón precisa: su error es igual al error promedio de los miembros *menos cuánto difieren entre sí*, así que combinar modelos que fallan en situaciones distintas puntúa mejor que cualquiera por separado. Cada predicción se puntúa con **Brier score** — menor es mejor, aleatorio 0.667, perfecto 0.000. Cualquier modelo que no supere la línea base se descarta.
+Cada día compiten dos modelos sobre el mismo pronóstico: una **línea base** (lo que suele ocurrir) y un **retador stat** (analogías ponderadas sobre la dinámica reciente de la brecha más señales de petróleo, noticias y quincena). Cada predicción se puntúa contra el resultado real a 24h con el **Brier score** — menor es mejor; aleatorio 0.667, perfecto 0.000. Los puntajes se muestran con intervalo de confianza del 95%, y el retador solo cuenta como superior a la línea base cuando la diferencia es estadísticamente significativa (✓; ≈ significa por delante pero aún no significativo). Estado honesto: con apenas unas decenas de pronósticos evaluados, diferencias tan pequeñas son provisionales — reportamos la incertidumbre en vez de ocultarla.
 
 | Model · Modelo | Brier ↓ | vs Baseline | Forecasts Scored · Evaluados |
 |---|---|---|---|
