@@ -478,7 +478,9 @@ def setup_schedule(scheduler: BackgroundScheduler):
     logger.info("  heartbeat           every 6 hours")
     logger.info("  run_brent_fetch     daily 10:30 UTC")
     logger.info("  run_news_scan       every 3 hours")
-    logger.info("  run_daily_forecast  daily 10:55 UTC (naive + stat + stat_v2 + stat_v3)")
+    from analysis.forecasters.jobs import DEFAULT_FORECASTERS
+    _models = " + ".join(c.name for c in DEFAULT_FORECASTERS)
+    logger.info(f"  run_daily_forecast  daily 10:55 UTC ({_models})")
     logger.info("  run_score_forecasts hourly")
 
 
