@@ -1,41 +1,52 @@
 {
-  "updated_at": "2026-06-24T16:26:53.120119",
-  "note": "Lower Brier is better. Random=0.667, Perfect=0.000. 30+ scored forecasts needed for significance.",
+  "updated_at": "2026-06-25T06:28:12.217320",
+  "note": "Lower Brier is better. Uniform-random=0.667, perfect=0. brier_ci95 is the 95% confidence interval on the mean; 'significant' means the gap exceeds 1.96 standard errors. With n<30, treat every gap as provisional noise until it stays significant over months. calibration compares each model's average predicted probability to the observed frequency per class.",
   "models": {
     "naive": {
-      "mean_brier": 0.7267,
-      "n_scored": 39,
-      "vs_naive": null
+      "mean_brier": 0.7299,
+      "n_scored": 41,
+      "brier_ci95": 0.0842,
+      "vs_naive": null,
+      "beats_naive_significant": null,
+      "vs_uniform": 0.0632,
+      "beats_uniform_significant": false,
+      "calibration": {
+        "widen": {
+          "predicted": 0.282,
+          "observed": 0.317
+        },
+        "stable": {
+          "predicted": 0.489,
+          "observed": 0.366
+        },
+        "narrow": {
+          "predicted": 0.229,
+          "observed": 0.317
+        }
+      }
     },
     "stat": {
-      "mean_brier": 0.68,
-      "n_scored": 39,
-      "vs_naive": -0.0467
-    },
-    "stat_v2": {
-      "mean_brier": 0.7044,
-      "n_scored": 38,
-      "vs_naive": -0.0223
-    },
-    "stat_v3": {
-      "mean_brier": 0.7024,
-      "n_scored": 38,
-      "vs_naive": -0.0243
-    },
-    "momentum": {
-      "mean_brier": 0.8171,
-      "n_scored": 36,
-      "vs_naive": 0.0903
-    },
-    "markov": {
-      "mean_brier": 0.7893,
-      "n_scored": 36,
-      "vs_naive": 0.0626
-    },
-    "ensemble": {
-      "mean_brier": 0.7304,
-      "n_scored": 36,
-      "vs_naive": 0.0036
+      "mean_brier": 0.6817,
+      "n_scored": 41,
+      "brier_ci95": 0.0669,
+      "vs_naive": -0.0481,
+      "beats_naive_significant": false,
+      "vs_uniform": 0.0151,
+      "beats_uniform_significant": false,
+      "calibration": {
+        "widen": {
+          "predicted": 0.315,
+          "observed": 0.317
+        },
+        "stable": {
+          "predicted": 0.44,
+          "observed": 0.366
+        },
+        "narrow": {
+          "predicted": 0.245,
+          "observed": 0.317
+        }
+      }
     }
   }
 }

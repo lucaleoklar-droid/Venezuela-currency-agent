@@ -11,11 +11,11 @@
 | Metric · Métrica | Value · Valor |
 |---|---|
 | BCV Oficial | **621.53** VES/USD |
-| Paralelo | **792.55** VES/USD |
-| Brecha · Spread | **27.5%** |
-| Binance P2P USDT/VES | **795.67** VES/USDT (+0.4% vs paralelo) |
-| **Pronóstico 24h · 24h Forecast** | **→ Estable · Stable (47%)** |
-| Actualizado · Updated | 2026-06-24 15:26 UTC |
+| Paralelo | **785.36** VES/USD |
+| Brecha · Spread | **26.4%** |
+| Binance P2P USDT/VES | **787.59** VES/USDT (+0.3% vs paralelo) |
+| **Pronóstico 24h · 24h Forecast** | **→ Estable · Stable (46%)** |
+| Actualizado · Updated | 2026-06-25 04:26 UTC |
 
 ![Venezuela BCV vs parallel rate — last 30 days](data/chart.png)
 
@@ -23,19 +23,14 @@
 
 ## Live Accuracy Track Record · Historial de Precisión en Vivo
 
-Every day, several models with deliberately different assumptions compete — a base-rate baseline, kernel-analog models on oil/news/payday signals, a trend-follower, and a regime-transition model. A diversified **ensemble** then blends them. The blend is reliable for a precise reason: its error equals the average member's error *minus how much the members disagree*, so combining models that fail in different situations scores better than any one alone. Each prediction is scored against the actual outcome using **Brier score** — lower is better, a random guess scores 0.667, a perfect forecaster 0.000. Any model that fails to beat the naive baseline gets rejected.
+Every day two models compete on the same forecast: a **naive base-rate benchmark** (what usually happens) and a **stat challenger** (kernel-weighted analogs over recent spread dynamics plus oil, news, and payday-cycle signals). Each prediction is scored against the actual 24h outcome with the **Brier score** — lower is better; a random guess scores 0.667, a perfect forecaster 0.000. Scores are shown with a 95% confidence interval, and the challenger only counts as beating the baseline once the gap is statistically significant (✓; ≈ means ahead but not yet significant). Honest status: with only a few dozen scored forecasts so far, gaps this small are provisional — we report the uncertainty instead of hiding it.
 
-Cada día compiten varios modelos con supuestos deliberadamente distintos — una línea base, modelos de analogía sobre señales de petróleo/noticias/quincena, un seguidor de tendencia y un modelo de transición de régimen. Un **ensemble** diversificado los combina. La combinación es fiable por una razón precisa: su error es igual al error promedio de los miembros *menos cuánto difieren entre sí*, así que combinar modelos que fallan en situaciones distintas puntúa mejor que cualquiera por separado. Cada predicción se puntúa con **Brier score** — menor es mejor, aleatorio 0.667, perfecto 0.000. Cualquier modelo que no supere la línea base se descarta.
+Cada día compiten dos modelos sobre el mismo pronóstico: una **línea base** (lo que suele ocurrir) y un **retador stat** (analogías ponderadas sobre la dinámica reciente de la brecha más señales de petróleo, noticias y quincena). Cada predicción se puntúa contra el resultado real a 24h con el **Brier score** — menor es mejor; aleatorio 0.667, perfecto 0.000. Los puntajes se muestran con intervalo de confianza del 95%, y el retador solo cuenta como superior a la línea base cuando la diferencia es estadísticamente significativa (✓; ≈ significa por delante pero aún no significativo). Estado honesto: con apenas unas decenas de pronósticos evaluados, diferencias tan pequeñas son provisionales — reportamos la incertidumbre en vez de ocultarla.
 
 | Model · Modelo | Brier ↓ | vs Baseline | Forecasts Scored · Evaluados |
 |---|---|---|---|
-| naive (baseline) | 0.7267 | — | 39 |
-| stat | 0.6800 | −0.0467 ✓ | 39 |
-| stat\_v2 (oil + news · petróleo + noticias) | 0.7044 | −0.0223 ✓ | 38 |
-| stat\_v3 (+ payday · quincena) | 0.7024 | −0.0243 ✓ | 38 |
-| momentum (trend · tendencia) | 0.8171 | +0.0903 ✗ | 36 |
-| markov (regime · régimen) | 0.7893 | +0.0626 ✗ | 36 |
-| **ensemble (blend · combinación)** | 0.7304 | +0.0036 ✗ | 36 |
+| naive (baseline) | 0.730 ± 0.084 | — | 41 |
+| stat | 0.682 ± 0.067 | −0.048 ≈ | 41 |
 
 *Accumulating live data since May 2026 · Acumulando datos en vivo desde mayo 2026*
 
