@@ -13,7 +13,7 @@
 | BCV Oficial | **622.21** VES/USD |
 | Paralelo | **787.88** VES/USD |
 | Brecha · Spread | **26.6%** |
-| Binance P2P USDT/VES | **789.22** VES/USDT (+0.2% vs paralelo) |
+| Binance P2P USDT/VES | **774.80** VES/USDT (-1.7% vs paralelo) |
 | **Pronóstico 24h · 24h Forecast** | **↓ Estrechando · Narrowing (46%)** |
 | Actualizado · Updated | 2026-06-26 04:34 UTC |
 
@@ -29,8 +29,8 @@ Cada día compiten dos modelos sobre el mismo pronóstico: una **línea base** (
 
 | Model · Modelo | Brier ↓ | vs Baseline | Forecasts Scored · Evaluados |
 |---|---|---|---|
-| naive (baseline) | 0.729 ± 0.082 | — | 42 |
-| stat | 0.681 ± 0.065 | −0.048 ≈ | 42 |
+| naive (baseline) | 0.723 ± 0.081 | — | 43 |
+| stat | 0.681 ± 0.064 | −0.042 ≈ | 43 |
 
 *Accumulating live data since May 2026 · Acumulando datos en vivo desde mayo 2026*
 
