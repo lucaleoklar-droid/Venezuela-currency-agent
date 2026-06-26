@@ -5,10 +5,10 @@
   "spread_pct": 26.62,
   "source": "ve.dolarapi.com",
   "binance_p2p": {
-    "timestamp_utc": "2026-06-26T12:58:23.761382",
-    "mid_price_ves_per_usdt": 788.37,
-    "best_bid": 787.0,
-    "best_ask": 789.74,
-    "bid_ask_spread_pct": 0.348
+    "timestamp_utc": "2026-06-26T13:30:05.705066",
+    "mid_price_ves_per_usdt": 785.16,
+    "best_bid": 784.25,
+    "best_ask": 786.08,
+    "bid_ask_spread_pct": 0.233
   }
 }
