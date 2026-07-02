@@ -27,7 +27,7 @@ def _load_history(lookback_days: int) -> list[dict]:
             "SELECT timestamp, bcv_rate, parallel_rate, spread_pct "
             "FROM rates "
             "WHERE bcv_rate IS NOT NULL AND parallel_rate IS NOT NULL "
-            "AND timestamp >= datetime('now', ?) "
+            "AND timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) "
             "ORDER BY timestamp ASC",
             (f"-{lookback_days} days",),
         ).fetchall()

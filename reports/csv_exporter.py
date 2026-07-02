@@ -39,7 +39,7 @@ def _build_recent_csv() -> str:
     rows = _query(
         "SELECT timestamp, bcv_rate, parallel_rate, spread_pct, source "
         "FROM rates "
-        "WHERE timestamp >= datetime('now', '-7 days') "
+        "WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days') "
         "ORDER BY timestamp DESC"
     )
     return _build_csv(rows, ["timestamp", "bcv_rate", "parallel_rate", "spread_pct", "source"])

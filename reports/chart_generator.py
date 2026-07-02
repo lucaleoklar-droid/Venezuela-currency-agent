@@ -28,7 +28,7 @@ def _fetch_rates(days: int) -> list:
     conn = get_connection()
     rows = conn.execute(
         "SELECT timestamp, bcv_rate, parallel_rate, spread_pct "
-        "FROM rates WHERE timestamp >= datetime('now', ?) "
+        "FROM rates WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) "
         "ORDER BY timestamp ASC",
         (f"-{days} days",)
     ).fetchall()

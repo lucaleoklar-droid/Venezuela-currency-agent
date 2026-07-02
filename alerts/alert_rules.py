@@ -89,7 +89,9 @@ def process_alerts():
     deliver_queued_alerts()
 
 
-STALE_ALERT_MAX_AGE_MIN = 10  # Alerts older than this never get delivered
+# Must exceed the 30-min scrape interval: delivery retries only happen on the
+# next cycle, so a max age below 30 min meant failed sends were never retried.
+STALE_ALERT_MAX_AGE_MIN = 45
 
 
 def deliver_queued_alerts():

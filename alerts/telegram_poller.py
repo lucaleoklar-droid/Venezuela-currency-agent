@@ -317,6 +317,9 @@ def _log_action(chat_id: str | None, action: str, amount: float | None) -> str:
 
 def _handle_command(text: str, chat_id: str | None = None) -> str:
     t = (text or "").lower().strip()
+    # Whole-word matching: substring checks routed "jueves" to the VES
+    # converter ("ves") and "obsoleto" to it too ("bs").
+    words = set(re.findall(r"[\wáéíóúñ]+", t))
 
     try:
         if t in ["/start", "/help", "/ayuda", "ayuda", "help"]:
@@ -328,25 +331,25 @@ def _handle_command(text: str, chat_id: str | None = None) -> str:
             return _log_action(chat_id, "converted", _parse_amount(t))
         if first_word in {"esperé", "espere", "esperando"}:
             return _log_action(chat_id, "waited", None)
-        if any(kw in t for kw in ["semana", "7 dias", "7 días", "weekly", "week"]):
+        if words & {"semana", "weekly", "week"} or "7 dias" in t or "7 días" in t:
             return _week_message()
-        if any(kw in t for kw in ["24h", "historia", "history", "ayer"]):
+        if words & {"24h", "historia", "history", "ayer"}:
             return _history_24h_message()
-        if any(kw in t for kw in ["estado", "status", "salud", "health"]):
+        if words & {"estado", "status", "salud", "health"}:
             return _status_message()
         # Pricing: "precio 50" -> how many VES is $50
-        if any(kw in t for kw in ["precio", "price", "$", "usd"]):
+        if words & {"precio", "price", "usd"} or "$" in t:
             amount = _parse_amount(t)
             if amount is None:
                 return "Use: <code>precio 50</code> para calcular cuántos VES son $50."
             return _price_in_ves_message(amount)
         # Conversion: "convertir 100000" -> how many USD is 100000 VES
-        if any(kw in t for kw in ["convertir", "convert", "bs", "bolivares", "bolívares", "ves"]):
+        if words & {"convertir", "convert", "bs", "bolivares", "bolívares", "ves"}:
             amount = _parse_amount(t)
             if amount is None:
                 return "Use: <code>convertir 100000</code> para convertir 100,000 VES a USD."
             return _convert_to_usd_message(amount)
-        if any(kw in t for kw in ["tasa", "dolar", "dólar", "cambio", "rate", "/rate"]):
+        if words & {"tasa", "dolar", "dólar", "cambio", "rate"}:
             return _current_rate_message()
         return _help_message()
     except Exception as e:

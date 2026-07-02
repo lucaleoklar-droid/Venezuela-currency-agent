@@ -197,7 +197,7 @@ def insert_rate(timestamp: str, bcv_rate: float, parallel_rate: float,
 def get_recent_rates(hours: int = 24):
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM rates WHERE timestamp >= datetime('now', ?) ORDER BY timestamp DESC",
+            "SELECT * FROM rates WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) ORDER BY timestamp DESC",
             (f"-{hours} hours",)
         ).fetchall()
     return [dict(r) for r in rows]
@@ -206,7 +206,7 @@ def get_recent_rates(hours: int = 24):
 def get_rates_last_n_days(days: int):
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM rates WHERE timestamp >= datetime('now', ?) ORDER BY timestamp ASC",
+            "SELECT * FROM rates WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) ORDER BY timestamp ASC",
             (f"-{days} days",)
         ).fetchall()
     return [dict(r) for r in rows]
@@ -225,7 +225,7 @@ def get_avg_spread(days: int):
     with db() as conn:
         row = conn.execute(
             "SELECT AVG(spread_pct) as avg FROM rates "
-            "WHERE timestamp >= datetime('now', ?) AND spread_pct IS NOT NULL",
+            "WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) AND spread_pct IS NOT NULL",
             (f"-{days} days",)
         ).fetchone()
     return row["avg"] if row and row["avg"] is not None else None
@@ -242,11 +242,6 @@ def get_last_bcv_update():
 def insert_alert(timestamp: str, alert_type: str, message: str,
                  bcv_rate=None, parallel_rate=None, spread_pct=None):
     with db() as conn:
-        # Add missing columns to legacy DBs
-        cols = [r["name"] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
-        for col in ["bcv_rate", "parallel_rate", "spread_pct"]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} REAL")
         conn.execute(
             "INSERT INTO alerts (timestamp, alert_type, message, bcv_rate, parallel_rate, spread_pct) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -492,11 +487,11 @@ def get_weekly_data():
             "SELECT date(timestamp) as day, "
             "AVG(bcv_rate) as avg_bcv, AVG(parallel_rate) as avg_parallel, "
             "AVG(spread_pct) as avg_spread, MIN(spread_pct) as min_spread, MAX(spread_pct) as max_spread "
-            "FROM rates WHERE timestamp >= datetime('now', '-7 days') "
+            "FROM rates WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days') "
             "GROUP BY day ORDER BY day ASC"
         ).fetchall()
         alert_count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM alerts WHERE timestamp >= datetime('now', '-7 days')"
+            "SELECT COUNT(*) as cnt FROM alerts WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days')"
         ).fetchone()["cnt"]
     return [dict(r) for r in rates], alert_count
 
@@ -559,7 +554,7 @@ def get_claude_usage_summary(days: int = 7) -> dict:
             "SUM(COALESCE(cache_read_tokens,0)) as cache_read, "
             "SUM(COALESCE(cache_creation_tokens,0)) as cache_create, "
             "SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors "
-            "FROM claude_calls WHERE ts >= datetime('now', ?)",
+            "FROM claude_calls WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)",
             (f"-{days} days",)
         ).fetchone()
     return dict(row) if row else {}

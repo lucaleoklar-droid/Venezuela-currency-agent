@@ -76,10 +76,19 @@ def compute_change_pct(rates: list, hours: int) -> float | None:
             past_rate = r["parallel_rate"]
             break
 
-    # If no data old enough exists, use the OLDEST available reading as a best-effort proxy
+    # If no data old enough exists, use the OLDEST available reading as a
+    # best-effort proxy — but only if it covers at least half the window.
+    # A 2h-old proxy labeled as a "24h change" fires false spike alerts
+    # after data gaps.
     if past_rate is None:
         oldest = next((r for r in reversed(rates) if r.get("parallel_rate")), None)
         if not oldest or oldest is rates[0]:
+            return None
+        try:
+            oldest_ts = datetime.fromisoformat(oldest["timestamp"]).timestamp()
+        except (ValueError, TypeError):
+            return None
+        if _utcnow().timestamp() - oldest_ts < hours * 3600 / 2:
             return None
         past_rate = oldest["parallel_rate"]
 
@@ -192,6 +201,31 @@ def run_analysis() -> dict:
     }
 
 
+_P2P_DIVERGENCE_PCT = 10.0
+_P2P_MAX_AGE_HOURS = 2.0
+
+
+def _p2p_diverges_from(parallel_rate: float | None) -> bool:
+    """True when a fresh Binance P2P mid disagrees with the parallel rate by
+    more than _P2P_DIVERGENCE_PCT. Stale, missing, or unreadable P2P data
+    never blocks — this gate must not be able to break alert processing."""
+    if not parallel_rate:
+        return False
+    try:
+        from db.db import get_latest_p2p_rate
+        p2p = get_latest_p2p_rate()
+        if not p2p or not p2p.get("mid_price"):
+            return False
+        ts = datetime.fromisoformat(p2p["timestamp"])
+        age_h = (_utcnow() - ts).total_seconds() / 3600
+        if age_h > _P2P_MAX_AGE_HOURS:
+            return False
+        return abs(parallel_rate - p2p["mid_price"]) / p2p["mid_price"] * 100 > _P2P_DIVERGENCE_PCT
+    except Exception as e:
+        logger.warning(f"P2P divergence check failed (treating as no divergence): {e}")
+        return False
+
+
 def check_spike_alerts() -> list[dict]:
     """Returns alert dicts when thresholds are breached."""
     alerts = []
@@ -234,12 +268,21 @@ def check_spike_alerts() -> list[dict]:
     # 12h move: drop > 5% (opportunity) or jump > 6% (warning)
     change_12h = compute_change_pct(rates_12h, 12)
     if change_12h is not None and change_12h < -5:
-        alerts.append({
-            "type": "rate_drop_12h",
-            "detail": f"La tasa bajó {abs(change_12h):.1f}% en las últimas 12h — posible oportunidad de conversión",
-            "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
-            "alert_type": "OPPORTUNITY",
-        })
+        # Cross-check against Binance P2P before recommending conversion: a big
+        # divergence usually means the parallel source is stale or wrong —
+        # exactly when an OPPORTUNITY alert would be dangerous.
+        if _p2p_diverges_from(parallel):
+            logger.warning(
+                f"OPPORTUNITY alert suppressed: parallel {parallel} diverges "
+                f">10% from fresh Binance P2P mid"
+            )
+        else:
+            alerts.append({
+                "type": "rate_drop_12h",
+                "detail": f"La tasa bajó {abs(change_12h):.1f}% en las últimas 12h — posible oportunidad de conversión",
+                "bcv_rate": bcv, "parallel_rate": parallel, "spread_pct": spread,
+                "alert_type": "OPPORTUNITY",
+            })
     elif change_12h is not None and change_12h > 6:
         alerts.append({
             "type": "rate_jump_12h",

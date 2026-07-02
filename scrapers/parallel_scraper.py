@@ -46,11 +46,13 @@ def parse_rate(text: str) -> float | None:
     return None
 
 
-def _request_with_retry(url, retries=2, **kwargs):
+def _request_with_retry(url, retries=2, verify=True, **kwargs):
+    """TLS verification on by default — only BCV needs verify=False (broken
+    cert chain), and that lives in bcv_scraper. Don't disable it here."""
     last_err = None
     for attempt in range(retries + 1):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=15, verify=False, **kwargs)
+            resp = requests.get(url, headers=HEADERS, timeout=15, verify=verify, **kwargs)
             resp.raise_for_status()
             return resp
         except requests.RequestException as e:
@@ -120,9 +122,29 @@ def scrape_dolartoday() -> dict:
     return result
 
 
+def fetch_binance_p2p_fallback() -> dict:
+    """Last resort: Binance P2P USDT/VES mid. An independent market rate we
+    already collect as a supplementary signal — better than no reading at all
+    when both primary sources fail."""
+    result = {"rate": None, "timestamp": _now_iso(), "source": "binance_p2p", "error": None}
+    try:
+        from scrapers.binance_p2p_scraper import fetch_p2p_rate
+        p2p = fetch_p2p_rate()
+        mid = p2p.get("mid_price")
+        if p2p.get("ok") and mid and MIN_RATE < mid < MAX_RATE:
+            result["rate"] = round(float(mid), 4)
+            logger.info(f"binance_p2p fallback: {result['rate']}")
+        else:
+            result["error"] = p2p.get("error") or "No usable P2P mid price"
+    except Exception as e:
+        result["error"] = str(e)
+        logger.warning(f"binance_p2p fallback failed: {e}")
+    return result
+
+
 def get_parallel_rate() -> dict:
-    """Try API sources first (more reliable), then scraped sources."""
-    for fn in [fetch_dolarapi_ve, scrape_dolartoday]:
+    """Try API sources first (more reliable), then scraped, then P2P mid."""
+    for fn in [fetch_dolarapi_ve, scrape_dolartoday, fetch_binance_p2p_fallback]:
         result = fn()
         if result["rate"]:
             return result
