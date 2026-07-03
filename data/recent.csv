@@ -1,4 +1,5 @@
 timestamp,bcv_rate,parallel_rate,spread_pct,source
+2026-07-03T13:26:49.782984,652.9726,737.687,12.97,ve.dolarapi.com
 2026-07-03T12:26:08.001501,652.9726,736.0325,12.72,ve.dolarapi.com
 2026-07-03T04:27:53.691300,652.9726,739.0,13.17,ve.dolarapi.com
 2026-07-03T01:55:38.785573,652.9726,735.4633,12.63,ve.dolarapi.com
@@ -99,4 +100,3 @@ timestamp,bcv_rate,parallel_rate,spread_pct,source
 2026-06-26T14:32:27.038819,,782.7664,,ve.dolarapi.com
 2026-06-26T14:00:41.544960,,785.4134,,ve.dolarapi.com
 2026-06-26T13:28:57.964909,,785.4134,,ve.dolarapi.com
-2026-06-26T12:57:16.833623,,786.8837,,ve.dolarapi.com
