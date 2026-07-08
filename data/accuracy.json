@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-08T04:06:04.018384",
+  "updated_at": "2026-07-08T06:06:46.683232",
   "note": "Lower Brier is better. Uniform-random=0.667, perfect=0. brier_ci95 is the 95% confidence interval on the mean; 'significant' means the gap exceeds 1.96 standard errors. With n<30, treat every gap as provisional noise until it stays significant over months. calibration compares each model's average predicted probability to the observed frequency per class.",
   "models": {
     "naive": {
