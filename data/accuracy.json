@@ -1,50 +1,50 @@
 {
-  "updated_at": "2026-07-30T10:55:00.060612",
+  "updated_at": "2026-07-31T03:38:11.060155",
   "note": "Lower Brier is better. Uniform-random=0.667, perfect=0. brier_ci95 is the 95% confidence interval on the mean; 'significant' means the gap exceeds 1.96 standard errors. With n<30, treat every gap as provisional noise until it stays significant over months. calibration compares each model's average predicted probability to the observed frequency per class.",
   "models": {
     "naive": {
-      "mean_brier": 0.7062,
-      "n_scored": 71,
-      "brier_ci95": 0.0572,
+      "mean_brier": 0.7064,
+      "n_scored": 72,
+      "brier_ci95": 0.0564,
       "vs_naive": null,
       "beats_naive_significant": null,
-      "vs_uniform": 0.0396,
+      "vs_uniform": 0.0397,
       "beats_uniform_significant": false,
       "calibration": {
         "widen": {
-          "predicted": 0.273,
-          "observed": 0.296
+          "predicted": 0.274,
+          "observed": 0.292
         },
         "stable": {
-          "predicted": 0.415,
-          "observed": 0.324
+          "predicted": 0.414,
+          "observed": 0.333
         },
         "narrow": {
-          "predicted": 0.312,
-          "observed": 0.38
+          "predicted": 0.313,
+          "observed": 0.375
         }
       }
     },
     "stat": {
-      "mean_brier": 0.6884,
-      "n_scored": 71,
-      "brier_ci95": 0.0483,
-      "vs_naive": -0.0178,
+      "mean_brier": 0.6871,
+      "n_scored": 72,
+      "brier_ci95": 0.0477,
+      "vs_naive": -0.0193,
       "beats_naive_significant": false,
-      "vs_uniform": 0.0218,
+      "vs_uniform": 0.0205,
       "beats_uniform_significant": false,
       "calibration": {
         "widen": {
-          "predicted": 0.323,
-          "observed": 0.296
+          "predicted": 0.325,
+          "observed": 0.292
         },
         "stable": {
           "predicted": 0.367,
-          "observed": 0.324
+          "observed": 0.333
         },
         "narrow": {
-          "predicted": 0.309,
-          "observed": 0.38
+          "predicted": 0.308,
+          "observed": 0.375
         }
       }
     }
