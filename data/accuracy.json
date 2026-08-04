@@ -1,50 +1,50 @@
 {
-  "updated_at": "2026-08-03T10:55:00.043234",
+  "updated_at": "2026-08-04T00:19:20.539914",
   "note": "Lower Brier is better. Uniform-random=0.667, perfect=0. brier_ci95 is the 95% confidence interval on the mean; 'significant' means the gap exceeds 1.96 standard errors. With n<30, treat every gap as provisional noise until it stays significant over months. calibration compares each model's average predicted probability to the observed frequency per class.",
   "models": {
     "naive": {
-      "mean_brier": 0.7027,
-      "n_scored": 75,
-      "brier_ci95": 0.0543,
+      "mean_brier": 0.7052,
+      "n_scored": 76,
+      "brier_ci95": 0.0538,
       "vs_naive": null,
       "beats_naive_significant": null,
-      "vs_uniform": 0.0361,
+      "vs_uniform": 0.0385,
       "beats_uniform_significant": false,
       "calibration": {
         "widen": {
-          "predicted": 0.276,
-          "observed": 0.28
+          "predicted": 0.277,
+          "observed": 0.276
         },
         "stable": {
-          "predicted": 0.411,
-          "observed": 0.36
+          "predicted": 0.412,
+          "observed": 0.355
         },
         "narrow": {
-          "predicted": 0.312,
-          "observed": 0.36
+          "predicted": 0.311,
+          "observed": 0.368
         }
       }
     },
     "stat": {
-      "mean_brier": 0.6754,
-      "n_scored": 75,
-      "brier_ci95": 0.0478,
-      "vs_naive": -0.0273,
+      "mean_brier": 0.683,
+      "n_scored": 76,
+      "brier_ci95": 0.0494,
+      "vs_naive": -0.0222,
       "beats_naive_significant": false,
-      "vs_uniform": 0.0087,
+      "vs_uniform": 0.0164,
       "beats_uniform_significant": false,
       "calibration": {
         "widen": {
-          "predicted": 0.325,
-          "observed": 0.28
+          "predicted": 0.324,
+          "observed": 0.276
         },
         "stable": {
-          "predicted": 0.373,
-          "observed": 0.36
+          "predicted": 0.376,
+          "observed": 0.355
         },
         "narrow": {
-          "predicted": 0.302,
-          "observed": 0.36
+          "predicted": 0.3,
+          "observed": 0.368
         }
       }
     }
